@@ -1,0 +1,13 @@
+name: hantavirus-snake
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python>=3.11
+  - snakemake
+  - mafft
+  - iqtree
+  - hyphy
+  - pandas>=2.0
+  - streamlit>=1.35

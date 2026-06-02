@@ -1,0 +1,46 @@
+inputs:
+  protein_alignment: data/andv_aligned-aa-GPC_2026-05-12T1516.fasta
+  nucleotide_fasta: data/andv_nuc-M_2026-05-12T1515.fasta
+  metadata: data/andv_metadata_2026-05-12T1515.tsv
+
+reference:
+  metadata_id: PP_006W0E7.1
+  hyphy_id: PP_006W0E7_1
+
+recovery:
+  min_identity: 0.60
+  missing_as: NNN
+
+host_filter:
+  enabled: true
+  metadata_id_column: accessionVersion
+  host_column: hostNameScientific
+  keep_reference: true
+
+codon_alignment:
+  min_translation_identity: 0.70
+  missing_as: gap
+
+mafft:
+  threads: 1
+
+iqtree:
+  model: MFP
+  bootstraps: 1000
+  alrt: 1000
+  threads: AUTO
+  extra_args: ""
+
+hyphy:
+  executable: ""
+  clean_inputs: true
+
+relax:
+  test_host: Homo sapiens
+  test_label: Test
+  reference_label: Reference
+
+dashboard:
+  fel_q: 0.1
+  meme_q: 0.1
+  absrel_p: 0.05

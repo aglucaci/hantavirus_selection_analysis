@@ -1,0 +1,480 @@
+configfile: "config/config.yaml"
+
+from snakemake.shell import shell
+
+shell.executable("bash")
+
+PROTEIN_ALIGNMENT = config["inputs"]["protein_alignment"]
+NUCLEOTIDE_FASTA = config["inputs"]["nucleotide_fasta"]
+METADATA = config["inputs"]["metadata"]
+
+REFERENCE_METADATA_ID = config["reference"]["metadata_id"]
+REFERENCE_HYPHY_ID = config["reference"]["hyphy_id"]
+HOST_FILTER = config.get("host_filter", {})
+RECOVERED_RAW_ALL = "results/GPC_CDS.recovered.raw.all_hosts.fasta"
+RECOVERED_RAW_ALL_QC = "results/GPC_CDS.recovered.raw.qc.tsv"
+RECOVERED_RAW_FILTERED = "results/GPC_CDS.recovered.raw.fasta"
+RECOVERED_RAW_FILTER_QC = "results/GPC_CDS.recovered.raw.host_filter.qc.tsv"
+
+GLOBAL_PREFIX = "ANDV_GPC_global"
+RELAX_PREFIX = "ANDV_GPC_human_vs_reservoir_RELAX"
+TREE_PREFIX = "GPC_CDS.mafft_codon_aligned.deduplicated"
+
+HYPHY_ANALYSES = {
+    "FEL": "FEL",
+    "MEME": "MEME",
+    "BUSTED": "BUSTED",
+    "aBSREL": "aBSREL",
+}
+
+
+def hyphy_executable():
+    configured = config["hyphy"].get("executable", "")
+    return configured
+
+
+def shell_single_quote(value):
+    return "'" + str(value).replace("'", "'\"'\"'") + "'"
+
+
+def hyphy_executable_shell(configured):
+    configured = shell_single_quote(configured)
+    return rf'''
+hyphy_executable={configured}
+if [[ -z "$hyphy_executable" ]]; then
+  if command -v hyphy-avx >/dev/null 2>&1; then
+    hyphy_executable="$(command -v hyphy-avx)"
+  elif [[ -x /usr/lib/hyphy/bin/hyphy-avx ]]; then
+    hyphy_executable="/usr/lib/hyphy/bin/hyphy-avx"
+  elif command -v hyphy >/dev/null 2>&1; then
+    hyphy_executable="$(command -v hyphy)"
+  else
+    echo "ERROR: HyPhy executable not found."
+    exit 1
+  fi
+fi
+'''
+
+
+def hyphy_batch_shell(analysis):
+    return rf'''
+batch_file=""
+for candidate in \
+  "/usr/share/hyphy/TemplateBatchFiles/SelectionAnalyses/{analysis}.bf" \
+  "/usr/lib/hyphy/TemplateBatchFiles/SelectionAnalyses/{analysis}.bf" \
+  "/usr/local/share/hyphy/TemplateBatchFiles/SelectionAnalyses/{analysis}.bf"
+do
+  if [[ -s "$candidate" ]]; then
+    batch_file="$candidate"
+    break
+  fi
+done
+if [[ -z "$batch_file" ]]; then
+  batch_file="$(find /usr/share/hyphy /usr/lib/hyphy /usr/local/share/hyphy -path "*/SelectionAnalyses/{analysis}.bf" -print -quit 2>/dev/null || true)"
+fi
+if [[ -z "$batch_file" ]]; then
+  echo "ERROR: could not find HyPhy {analysis}.bf"
+  exit 1
+fi
+'''
+
+
+rule all:
+    input:
+        "results/dashboard/overview_metrics.json",
+        "results/dashboard/ANDV_GPC_selection_annotated_sites.tsv",
+        "results/hyphy_host_relax/ANDV_GPC_human_vs_reservoir_RELAX.json",
+        "data/reference/ANDV_GPC_reference_annotation.tsv",
+
+
+rule recover_raw_cds:
+    input:
+        protein=PROTEIN_ALIGNMENT,
+        nucleotide=NUCLEOTIDE_FASTA,
+        script="scripts/recover_raw_cds_from_aligned_protein.py",
+    output:
+        cds=RECOVERED_RAW_ALL,
+        qc=RECOVERED_RAW_ALL_QC,
+    params:
+        min_identity=config["recovery"]["min_identity"],
+        missing_as=config["recovery"]["missing_as"],
+    log:
+        "results/logs/recover_raw_cds.log",
+    shell:
+        r"""
+        mkdir -p results results/logs
+        python {input.script} \
+          -p {input.protein} \
+          -n {input.nucleotide} \
+          -o {output.cds} \
+          --qc {output.qc} \
+          --min-identity {params.min_identity} \
+          --missing-as {params.missing_as} \
+          --verbose > {log} 2>&1
+        """
+
+
+rule filter_recovered_cds_known_host:
+    input:
+        cds=RECOVERED_RAW_ALL,
+        metadata=METADATA,
+        script="scripts/filter_fasta_by_metadata_host.py",
+    output:
+        cds=RECOVERED_RAW_FILTERED,
+        qc=RECOVERED_RAW_FILTER_QC,
+    params:
+        id_column=HOST_FILTER.get("metadata_id_column", "accessionVersion"),
+        host_column=HOST_FILTER.get("host_column", "hostNameScientific"),
+        keep_id=REFERENCE_METADATA_ID if HOST_FILTER.get("keep_reference", True) else "",
+    log:
+        "results/logs/filter_recovered_cds_known_host.log",
+    shell:
+        r"""
+        mkdir -p results results/logs
+        keep_id_arg=""
+        if [[ -n "{params.keep_id}" ]]; then
+          keep_id_arg="--keep-id {params.keep_id}"
+        fi
+        python {input.script} \
+          -i {input.cds} \
+          -o {output.cds} \
+          --metadata {input.metadata} \
+          --qc {output.qc} \
+          --id-column {params.id_column} \
+          --host-column {params.host_column} \
+          $keep_id_arg > {log} 2>&1
+        """
+
+
+rule codon_alignment_from_downloaded_protein:
+    input:
+        protein=PROTEIN_ALIGNMENT,
+        cds="results/GPC_CDS.recovered.raw.fasta",
+        script="scripts/generate_codon_alignment_from_protein.py",
+    output:
+        alignment="results/GPC_CDS.codon_aligned.fasta",
+        qc="results/GPC_CDS.codon_aligned.qc.tsv",
+    params:
+        min_identity=config["codon_alignment"]["min_translation_identity"],
+        missing_as=config["codon_alignment"]["missing_as"],
+    log:
+        "results/logs/codon_alignment_from_downloaded_protein.log",
+    shell:
+        r"""
+        mkdir -p results results/logs
+        python {input.script} \
+          -p {input.protein} \
+          -c {input.cds} \
+          -o {output.alignment} \
+          --qc {output.qc} \
+          --min-translation-identity {params.min_identity} \
+          --missing-as {params.missing_as} \
+          --verbose > {log} 2>&1
+        """
+
+
+rule sanitize_recovered_cds_ids:
+    input:
+        cds="results/GPC_CDS.recovered.raw.fasta",
+        script="scripts/sanitize_fasta_ids.py",
+    output:
+        cds="results/GPC_CDS.recovered.raw.hyphy_ids.fasta",
+        id_map="results/GPC_CDS.recovered.raw.hyphy_ids.map.tsv",
+    log:
+        "results/logs/sanitize_recovered_cds_ids.log",
+    shell:
+        r"""
+        mkdir -p results results/logs
+        python {input.script} \
+          -i {input.cds} \
+          -o {output.cds} \
+          --map {output.id_map} > {log} 2>&1
+        """
+
+
+rule translate_recovered_cds:
+    input:
+        cds="results/GPC_CDS.recovered.raw.hyphy_ids.fasta",
+        script="scripts/translate_cds_to_protein.py",
+    output:
+        protein="results/GPC_protein.from_recovered_CDS.fasta",
+    log:
+        "results/logs/translate_recovered_cds.log",
+    shell:
+        r"""
+        mkdir -p results results/logs
+        python {input.script} \
+          -i {input.cds} \
+          -o {output.protein} > {log} 2>&1
+        """
+
+
+rule mafft_protein_alignment:
+    input:
+        protein="results/GPC_protein.from_recovered_CDS.fasta",
+    output:
+        alignment="results/GPC_protein.from_recovered_CDS.mafft.aligned.fasta",
+    threads:
+        config["mafft"]["threads"]
+    log:
+        "results/logs/mafft_protein_alignment.log",
+    shell:
+        r"""
+        mkdir -p results results/logs
+        mafft --auto --thread {threads} {input.protein} > {output.alignment} 2> {log}
+        """
+
+
+rule mafft_codon_alignment:
+    input:
+        protein="results/GPC_protein.from_recovered_CDS.mafft.aligned.fasta",
+        cds="results/GPC_CDS.recovered.raw.hyphy_ids.fasta",
+        script="scripts/generate_codon_alignment_from_protein.py",
+    output:
+        alignment="results/GPC_CDS.mafft_codon_aligned.fasta",
+        qc="results/GPC_CDS.mafft_codon_aligned.qc.tsv",
+    params:
+        min_identity=config["codon_alignment"]["min_translation_identity"],
+        missing_as=config["codon_alignment"]["missing_as"],
+    log:
+        "results/logs/mafft_codon_alignment.log",
+    shell:
+        r"""
+        mkdir -p results results/logs
+        python {input.script} \
+          -p {input.protein} \
+          -c {input.cds} \
+          -o {output.alignment} \
+          --qc {output.qc} \
+          --min-translation-identity {params.min_identity} \
+          --missing-as {params.missing_as} \
+          --verbose > {log} 2>&1
+        """
+
+
+rule deduplicate_mafft_codon_alignment:
+    input:
+        alignment="results/GPC_CDS.mafft_codon_aligned.fasta",
+        script="scripts/deduplicate_fasta_by_sequence.py",
+    output:
+        alignment="results/GPC_CDS.mafft_codon_aligned.deduplicated.fasta",
+        duplicate_map="results/GPC_CDS.mafft_codon_aligned.duplicates.tsv",
+    params:
+        reference_id=REFERENCE_HYPHY_ID,
+    log:
+        "results/logs/deduplicate_mafft_codon_alignment.log",
+    shell:
+        r"""
+        mkdir -p results results/logs
+        python {input.script} \
+          -i {input.alignment} \
+          -o {output.alignment} \
+          --map {output.duplicate_map} \
+          --keep-id {params.reference_id} \
+          --verbose > {log} 2>&1
+        """
+
+
+rule iqtree2_tree:
+    input:
+        alignment="results/GPC_CDS.mafft_codon_aligned.deduplicated.fasta",
+    output:
+        tree="results/iqtree2/GPC_CDS.mafft_codon_aligned.deduplicated.treefile",
+        report="results/iqtree2/GPC_CDS.mafft_codon_aligned.deduplicated.iqtree",
+        log_file="results/iqtree2/GPC_CDS.mafft_codon_aligned.deduplicated.log",
+    params:
+        prefix="results/iqtree2/" + TREE_PREFIX,
+        model=config["iqtree"]["model"],
+        bootstraps=config["iqtree"]["bootstraps"],
+        alrt=config["iqtree"]["alrt"],
+        threads=config["iqtree"]["threads"],
+        extra_args=config["iqtree"].get("extra_args", ""),
+    log:
+        "results/logs/iqtree2_tree.log",
+    shell:
+        r"""
+        mkdir -p results/iqtree2 results/logs
+        iqtree2 \
+          -s {input.alignment} \
+          -m {params.model} \
+          -B {params.bootstraps} \
+          -alrt {params.alrt} \
+          -T {params.threads} \
+          --prefix {params.prefix} \
+          -redo \
+          {params.extra_args} > {log} 2>&1
+        """
+
+
+rule clean_hyphy_inputs:
+    input:
+        alignment="results/GPC_CDS.mafft_codon_aligned.deduplicated.fasta",
+        tree="results/iqtree2/GPC_CDS.mafft_codon_aligned.deduplicated.treefile",
+        script="scripts/filter_hyphy_codon_inputs.py",
+    output:
+        alignment=f"results/hyphy_global_selection/{GLOBAL_PREFIX}.hyphy_ready.fasta",
+        tree=f"results/hyphy_global_selection/{GLOBAL_PREFIX}.hyphy_ready.treefile",
+        qc=f"results/hyphy_global_selection/{GLOBAL_PREFIX}.hyphy_ready.qc.tsv",
+    params:
+        reference_id=REFERENCE_HYPHY_ID,
+    log:
+        "results/logs/clean_hyphy_inputs.log",
+    shell:
+        r"""
+        mkdir -p results/hyphy_global_selection results/logs
+        python {input.script} \
+          --alignment {input.alignment} \
+          --tree {input.tree} \
+          --out-alignment {output.alignment} \
+          --out-tree {output.tree} \
+          --qc {output.qc} \
+          --require-id {params.reference_id} \
+          --verbose > {log} 2>&1
+        """
+
+
+rule hyphy_global_selection:
+    input:
+        alignment=f"results/hyphy_global_selection/{GLOBAL_PREFIX}.hyphy_ready.fasta",
+        tree=f"results/hyphy_global_selection/{GLOBAL_PREFIX}.hyphy_ready.treefile",
+    output:
+        "results/hyphy_global_selection/ANDV_GPC_global_{analysis}.json",
+    params:
+        executable=hyphy_executable(),
+        executable_script=hyphy_executable_shell(hyphy_executable()),
+        batch=lambda wildcards: HYPHY_ANALYSES[wildcards.analysis],
+        batch_script=lambda wildcards: hyphy_batch_shell(HYPHY_ANALYSES[wildcards.analysis]),
+    log:
+        "results/logs/hyphy_global_{analysis}.log",
+    wildcard_constraints:
+        analysis="FEL|MEME|BUSTED|aBSREL"
+    shell:
+        r"""
+        mkdir -p results/hyphy_global_selection results/logs
+        {params.executable_script}
+        {params.batch_script}
+        "$hyphy_executable" "$batch_file" \
+          --alignment {input.alignment} \
+          --tree {input.tree} \
+          --output {output} > {log} 2>&1
+        """
+
+
+rule build_reference_annotation:
+    input:
+        nucleotide=NUCLEOTIDE_FASTA,
+        cds="results/GPC_CDS.recovered.raw.fasta",
+        script="scripts/build_andv_gpc_reference_annotation.py",
+    output:
+        annotation="data/reference/ANDV_GPC_reference_annotation.tsv",
+        m_fasta="data/reference/NC_003467.2_M.fasta",
+        cds_fasta="data/reference/NC_003467.2_GPC_CDS.no_stop.fasta",
+        protein_fasta="data/reference/NC_003467.2_GPC_protein.no_stop.fasta",
+    params:
+        ref_id=REFERENCE_METADATA_ID,
+        outdir="data/reference",
+    log:
+        "results/logs/build_reference_annotation.log",
+    shell:
+        r"""
+        mkdir -p data/reference results/logs
+        python {input.script} \
+          --m-fasta {input.nucleotide} \
+          --cds-fasta {input.cds} \
+          --ref-id {params.ref_id} \
+          --outdir {params.outdir} \
+          --verbose > {log} 2>&1
+        """
+
+
+rule label_relax_host_groups:
+    input:
+        tree=f"results/hyphy_global_selection/{GLOBAL_PREFIX}.hyphy_ready.treefile",
+        metadata=METADATA,
+        duplicate_map="results/GPC_CDS.mafft_codon_aligned.duplicates.tsv",
+        script="scripts/label_tree_for_relax_host_groups.py",
+    output:
+        tree=f"results/hyphy_host_relax/{RELAX_PREFIX}.treefile",
+        qc=f"results/hyphy_host_relax/{RELAX_PREFIX}.qc.tsv",
+    params:
+        test_host=config["relax"]["test_host"],
+        test_label=config["relax"]["test_label"],
+        reference_label=config["relax"]["reference_label"],
+    log:
+        "results/logs/label_relax_host_groups.log",
+    shell:
+        r"""
+        mkdir -p results/hyphy_host_relax results/logs
+        python {input.script} \
+          --tree {input.tree} \
+          --metadata {input.metadata} \
+          --output {output.tree} \
+          --qc {output.qc} \
+          --test-host "{params.test_host}" \
+          --test-label "{params.test_label}" \
+          --reference-label "{params.reference_label}" \
+          --duplicate-map {input.duplicate_map} \
+          --verbose > {log} 2>&1
+        """
+
+
+rule hyphy_relax:
+    input:
+        alignment=f"results/hyphy_global_selection/{GLOBAL_PREFIX}.hyphy_ready.fasta",
+        tree=f"results/hyphy_host_relax/{RELAX_PREFIX}.treefile",
+    output:
+        f"results/hyphy_host_relax/{RELAX_PREFIX}.json",
+    params:
+        executable=hyphy_executable(),
+        executable_script=hyphy_executable_shell(hyphy_executable()),
+        test_label=config["relax"]["test_label"],
+        reference_label=config["relax"]["reference_label"],
+        batch_script=hyphy_batch_shell("RELAX"),
+    log:
+        "results/logs/hyphy_relax.log",
+    shell:
+        r"""
+        mkdir -p results/hyphy_host_relax results/logs
+        {params.executable_script}
+        {params.batch_script}
+        "$hyphy_executable" "$batch_file" \
+          --alignment {input.alignment} \
+          --tree {input.tree} \
+          --test {params.test_label} \
+          --reference {params.reference_label} \
+          --output {output} > {log} 2>&1
+        """
+
+
+rule dashboard_data:
+    input:
+        fel="results/hyphy_global_selection/ANDV_GPC_global_FEL.json",
+        meme="results/hyphy_global_selection/ANDV_GPC_global_MEME.json",
+        busted="results/hyphy_global_selection/ANDV_GPC_global_BUSTED.json",
+        absrel="results/hyphy_global_selection/ANDV_GPC_global_aBSREL.json",
+        relax=f"results/hyphy_host_relax/{RELAX_PREFIX}.json",
+        annotation="data/reference/ANDV_GPC_reference_annotation.tsv",
+        raw_m_fasta=NUCLEOTIDE_FASTA,
+        metadata=METADATA,
+        script="scripts/build_dashboard_data.py",
+    output:
+        overview="results/dashboard/overview_metrics.json",
+        selected_sites="results/dashboard/ANDV_GPC_selection_annotated_sites.tsv",
+    params:
+        outdir="results/dashboard",
+        fel_q=config["dashboard"]["fel_q"],
+        meme_q=config["dashboard"]["meme_q"],
+        absrel_p=config["dashboard"]["absrel_p"],
+    log:
+        "results/logs/dashboard_data.log",
+    shell:
+        r"""
+        mkdir -p results/dashboard results/logs
+        python {input.script} \
+          --outdir {params.outdir} \
+          --raw-m-fasta {input.raw_m_fasta} \
+          --metadata {input.metadata} \
+          --fel-q {params.fel_q} \
+          --meme-q {params.meme_q} \
+          --absrel-p {params.absrel_p} > {log} 2>&1
+        """

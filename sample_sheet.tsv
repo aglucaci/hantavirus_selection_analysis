@@ -1,0 +1,5 @@
+segment	group	alignment	tree	source_tag
+L	ANDV	data/hantavirus/sequences_L_ex_lab_cells_2026_05_27v7.cds.linsi.fasta	data/hantavirus/sequences_L_ex_lab_cells_2026_05_27v7.cds.linsi.rt.annot-ANDV.nwk	hantavirus_hyphy
+L	clade3	data/hantavirus/sequences_L_ex_lab_cells_2026_05_27v7.cds.linsi.fasta	data/hantavirus/sequences_L_ex_lab_cells_2026_05_27v7.cds.linsi.rt.annot-clade3.nwk	hantavirus_hyphy
+S	ANDV	data/hantavirus/sequences_S_ex_lab_cells_2026_05_27v5.cds.linsi.fasta	data/hantavirus/sequences_S_ex_lab_cells_2026_05_27v5.cds.linsi.rt.annot-ANDV.nwk	hantavirus_hyphy
+S	clade3	data/hantavirus/sequences_S_ex_lab_cells_2026_05_27v5.cds.linsi.fasta	data/hantavirus/sequences_S_ex_lab_cells_2026_05_27v5.cds.linsi.rt.annot-clade3.nwk	hantavirus_hyphy

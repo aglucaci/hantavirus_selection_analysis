@@ -1,0 +1,10 @@
+segment	group	alignment	tree	source_tag
+L	ANDVall	data/ANDV_trees_aln-hyphy/sequences_L_ex_lab_cells_2026_05_27v7.cds.linsi.fasta	data/ANDV_trees_aln-hyphy/sequences_L_ex_lab_cells_2026_05_27v7.cds.linsi.rt.hyphy-ANDVall.nwk	ANDV_trees_aln-hyphy
+L	ANDVstems	data/ANDV_trees_aln-hyphy/sequences_L_ex_lab_cells_2026_05_27v7.cds.linsi.fasta	data/ANDV_trees_aln-hyphy/sequences_L_ex_lab_cells_2026_05_27v7.cds.linsi.rt.hyphy-ANDVstems.nwk	ANDV_trees_aln-hyphy
+L	humanout	data/ANDV_trees_aln-hyphy/sequences_L_ex_lab_cells_2026_05_27v7.cds.linsi.fasta	data/ANDV_trees_aln-hyphy/sequences_L_ex_lab_cells_2026_05_27v7.cds.linsi.rt.hyphy-humanout.nwk	ANDV_trees_aln-hyphy
+M	ANDVall	data/ANDV_trees_aln-hyphy/sequences_M_ex_lab_cells_concat_2026_05_27v6.cds.linsi.fasta	data/ANDV_trees_aln-hyphy/sequences_M_ex_lab_cells_concat_2026_05_27v6.cds.linsi.rt.hyphy-ANDVall.nwk	ANDV_trees_aln-hyphy
+M	ANDVstems	data/ANDV_trees_aln-hyphy/sequences_M_ex_lab_cells_concat_2026_05_27v6.cds.linsi.fasta	data/ANDV_trees_aln-hyphy/sequences_M_ex_lab_cells_concat_2026_05_27v6.cds.linsi.rt.hyphy-ANDVstems.nwk	ANDV_trees_aln-hyphy
+M	humanout	data/ANDV_trees_aln-hyphy/sequences_M_ex_lab_cells_concat_2026_05_27v6.cds.linsi.fasta	data/ANDV_trees_aln-hyphy/sequences_M_ex_lab_cells_concat_2026_05_27v6.cds.linsi.rt.hyphy-humanout.nwk	ANDV_trees_aln-hyphy
+S	ANDVall	data/ANDV_trees_aln-hyphy/sequences_S_ex_lab_cells_2026_05_27v5.cds.linsi.fasta	data/ANDV_trees_aln-hyphy/sequences_S_ex_lab_cells_2026_05_27v5.cds.linsi.rt.hyphy-ANDVall.nwk	ANDV_trees_aln-hyphy
+S	ANDVstems	data/ANDV_trees_aln-hyphy/sequences_S_ex_lab_cells_2026_05_27v5.cds.linsi.fasta	data/ANDV_trees_aln-hyphy/sequences_S_ex_lab_cells_2026_05_27v5.cds.linsi.rt.hyphy-ANDVstems.nwk	ANDV_trees_aln-hyphy
+S	humanout	data/ANDV_trees_aln-hyphy/sequences_S_ex_lab_cells_2026_05_27v5.cds.linsi.fasta	data/ANDV_trees_aln-hyphy/sequences_S_ex_lab_cells_2026_05_27v5.cds.linsi.rt.hyphy-humanout.nwk	ANDV_trees_aln-hyphy
