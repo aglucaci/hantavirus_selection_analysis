@@ -433,7 +433,7 @@ def parse_fel(path: Path, segment: str, label_set: str) -> tuple[dict, list[dict
 def parse_absrel(path: Path, segment: str, label_set: str) -> tuple[dict, list[dict]]:
     data = read_json(path)
     test_results = data.get("test results", {})
-    branches = []
+    branch_records = []
     for branch, attrs in data.get("branch attributes", {}).get("0", {}).items():
         if not isinstance(attrs, dict):
             continue
@@ -441,21 +441,33 @@ def parse_absrel(path: Path, segment: str, label_set: str) -> tuple[dict, list[d
         uncorrected = as_float(attrs.get("Uncorrected P-value"))
         if corrected is None:
             continue
-        if corrected <= 0.1 or uncorrected == 0:
-            branches.append(
-                {
-                    "segment": segment,
-                    "label_set": label_set,
-                    "branch": branch,
-                    "corrected_p_value": corrected,
-                    "uncorrected_p_value": uncorrected,
-                    "neg_log10_corrected_p": safe_neg_log10(corrected),
-                    "lrt": attrs.get("LRT", ""),
-                    "branch_length": attrs.get("Full adaptive model", ""),
-                    "omega_classes": json.dumps(attrs.get("Rate Distributions", "")),
-                    "status": "selected" if corrected <= 0.05 else "borderline",
-                }
-            )
+        branch_records.append(
+            {
+                "segment": segment,
+                "label_set": label_set,
+                "branch": branch,
+                "corrected_p_value": corrected,
+                "uncorrected_p_value": uncorrected,
+                "q_value": "",
+                "neg_log10_corrected_p": safe_neg_log10(corrected),
+                "neg_log10_q": "",
+                "lrt": attrs.get("LRT", ""),
+                "branch_length": attrs.get("Full adaptive model", ""),
+                "omega_classes": json.dumps(attrs.get("Rate Distributions", "")),
+                "status": "borderline",
+            }
+        )
+    q_values = bh_q_values([as_float(row.get("uncorrected_p_value")) for row in branch_records])
+    for row, q_value in zip(branch_records, q_values):
+        row["q_value"] = q_value
+        row["neg_log10_q"] = safe_neg_log10(q_value)
+        row["status"] = "selected" if q_value is not None and q_value <= 0.05 else "borderline"
+    branches = [
+        row for row in branch_records
+        if row["corrected_p_value"] <= 0.1
+        or row["uncorrected_p_value"] == 0
+        or (row["q_value"] is not None and row["q_value"] <= 0.1)
+    ]
     summary = {
         "segment": segment,
         "label_set": label_set,
@@ -464,7 +476,7 @@ def parse_absrel(path: Path, segment: str, label_set: str) -> tuple[dict, list[d
         "n_sequences": data.get("input", {}).get("number of sequences", ""),
         "codons": data.get("input", {}).get("number of sites", ""),
         "tested": test_results.get("tested", ""),
-        "significant_count": test_results.get("positive test results", len([b for b in branches if b["corrected_p_value"] <= 0.05])),
+        "significant_count": len([row for row in branch_records if row["q_value"] is not None and row["q_value"] <= 0.05]),
         "p_value": "",
         "neg_log10_p": "",
         "k": "",
@@ -495,8 +507,10 @@ def parse_relax(path: Path, segment: str, label_set: str) -> tuple[dict, dict]:
         "k": k_value,
         "lrt": results.get("LRT", ""),
         "p_value": p_value,
+        "q_value": "",
         "neg_log10_p": safe_neg_log10(p_value),
-        "significant": bool(p_value is not None and p_value <= 0.05),
+        "neg_log10_q": "",
+        "significant": False,
         "interpretation": interpretation,
     }
     summary = {
@@ -509,11 +523,35 @@ def parse_relax(path: Path, segment: str, label_set: str) -> tuple[dict, dict]:
         "tested": "",
         "significant_count": int(bool(p_value is not None and p_value <= 0.05)),
         "p_value": p_value,
+        "q_value": "",
         "neg_log10_p": safe_neg_log10(p_value),
+        "neg_log10_q": "",
         "k": k_value,
         "interpretation": interpretation,
     }
     return summary, row
+
+
+def apply_relax_fdr(analysis_summary: list[dict], relax_results: list[dict]) -> None:
+    for row in relax_results:
+        q_value = as_float(row.get("p_value"))
+        row["q_value"] = q_value
+        row["neg_log10_q"] = safe_neg_log10(q_value)
+        row["significant"] = bool(q_value is not None and q_value <= 0.05)
+
+    relax_by_run = {
+        (row["segment"], row["label_set"]): row
+        for row in relax_results
+    }
+    for summary in analysis_summary:
+        if summary.get("method") != "RELAX" or summary.get("status") != "pass":
+            continue
+        row = relax_by_run.get((summary.get("segment"), summary.get("label_set")))
+        if not row:
+            continue
+        summary["q_value"] = row["q_value"]
+        summary["neg_log10_q"] = row["neg_log10_q"]
+        summary["significant_count"] = int(bool(row["significant"]))
 
 
 def parse_mss(path: Path, segment: str, label_set: str) -> tuple[dict, dict, list[dict], list[dict]]:
@@ -768,11 +806,15 @@ def main() -> None:
                             "tested": "",
                             "significant_count": "",
                             "p_value": "",
+                            "q_value": "",
                             "neg_log10_p": "",
+                            "neg_log10_q": "",
                             "k": "",
                             "interpretation": "not available in current hantavirus run",
                         }
                     )
+
+    apply_relax_fdr(analysis_summary, relax_results)
 
     qc_summary, dropped_rows = qc_rows()
     quality_rows = alignment_quality_rows(segments, label_sets)
@@ -781,7 +823,7 @@ def main() -> None:
     write_tsv(
         OUT / "analysis_summary.tsv",
         sorted(analysis_summary, key=lambda row: (row["segment"], row["label_set"], row["method"])),
-        ["segment", "label_set", "method", "status", "n_sequences", "codons", "tested", "significant_count", "p_value", "neg_log10_p", "k", "interpretation"],
+        ["segment", "label_set", "method", "status", "n_sequences", "codons", "tested", "significant_count", "p_value", "q_value", "neg_log10_p", "neg_log10_q", "k", "interpretation"],
     )
     write_tsv(
         OUT / "qc_summary.tsv",
@@ -834,12 +876,12 @@ def main() -> None:
     write_tsv(
         OUT / "absrel_branches.tsv",
         absrel_branches,
-        ["segment", "label_set", "branch", "corrected_p_value", "uncorrected_p_value", "neg_log10_corrected_p", "lrt", "branch_length", "omega_classes", "status"],
+        ["segment", "label_set", "branch", "corrected_p_value", "uncorrected_p_value", "q_value", "neg_log10_corrected_p", "neg_log10_q", "lrt", "branch_length", "omega_classes", "status"],
     )
     write_tsv(
         OUT / "relax_results.tsv",
         relax_results,
-        ["segment", "label_set", "test_branches", "reference_branches", "k", "lrt", "p_value", "neg_log10_p", "significant", "interpretation"],
+        ["segment", "label_set", "test_branches", "reference_branches", "k", "lrt", "p_value", "q_value", "neg_log10_p", "neg_log10_q", "significant", "interpretation"],
     )
     write_tsv(
         OUT / "mss_results.tsv",

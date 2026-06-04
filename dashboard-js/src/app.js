@@ -4,6 +4,7 @@ const METHODS = ["FEL", "MEME", "BUSTED", "aBSREL", "RELAX", "MSS", "CFEL", "GAR
 const state = {
   tab: "overview",
   pThreshold: 0.1,
+  siteMetric: "q",
   selectedRun: null,
   search: "",
   treeSearch: "",
@@ -35,12 +36,36 @@ const tableExports = new Map();
 
 const app = document.querySelector("#app");
 const threshold = document.querySelector("#p-threshold");
+const thresholdTitle = document.querySelector("#p-threshold-title");
 const thresholdLabel = document.querySelector("#p-threshold-label");
+const siteMetricButtons = document.querySelectorAll("[data-site-metric]");
+
+function setLoadingMessage(message) {
+  app.innerHTML = `<section class="loading">${escapeHtml(message)}</section>`;
+}
+
+function updateSiteMetricControls() {
+  const metric = siteMetricMeta();
+  thresholdTitle.textContent = `Site ${metric.longLabel} threshold`;
+  thresholdLabel.textContent = state.pThreshold.toFixed(2);
+  siteMetricButtons.forEach(button => {
+    button.classList.toggle("active", button.dataset.siteMetric === state.siteMetric);
+    button.setAttribute("aria-pressed", String(button.dataset.siteMetric === state.siteMetric));
+  });
+}
 
 threshold.addEventListener("input", () => {
   state.pThreshold = Number(threshold.value);
-  thresholdLabel.textContent = state.pThreshold.toFixed(2);
+  updateSiteMetricControls();
   render();
+});
+
+siteMetricButtons.forEach(button => {
+  button.addEventListener("click", () => {
+    state.siteMetric = button.dataset.siteMetric === "p" ? "p" : "q";
+    updateSiteMetricControls();
+    render();
+  });
 });
 
 function parseTsv(text) {
@@ -64,17 +89,42 @@ function coerce(value) {
 }
 
 async function loadTable(file) {
-  const response = await fetch(`${TABLE_ROOT}/${file}`);
-  if (!response.ok) throw new Error(`Could not load ${file}`);
-  return parseTsv(await response.text());
+  const text = await loadText(`${TABLE_ROOT}/${file}`, file);
+  return parseTsv(text);
+}
+
+async function loadText(url, label = url) {
+  if (typeof fetch === "function") {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Could not load ${label} (${response.status})`);
+    return response.text();
+  }
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("GET", url, true);
+    request.onload = () => {
+      if (request.status >= 200 && request.status < 300) {
+        resolve(request.responseText);
+      } else {
+        reject(new Error(`Could not load ${label} (${request.status})`));
+      }
+    };
+    request.onerror = () => reject(new Error(`Could not load ${label}`));
+    request.send();
+  });
 }
 
 async function loadData() {
-  const entries = await Promise.all(
-    Object.entries(tableFiles).map(async ([key, file]) => [key, await loadTable(file)])
-  );
+  const entries = [];
+  const files = Object.entries(tableFiles);
+  for (const [index, [key, file]] of files.entries()) {
+    setLoadingMessage(`Loading dashboard table ${index + 1} of ${files.length}: ${file}`);
+    entries.push([key, await loadTable(file)]);
+  }
+  setLoadingMessage("Building dashboard views...");
   const data = Object.fromEntries(entries);
   data.genes = buildGeneRows(data);
+  setLoadingMessage("Loading labeled input trees...");
   data.trees = await loadTrees(data.genes);
   state.selectedRun = data.genes[0]?.gene_id ?? null;
   return data;
@@ -84,8 +134,7 @@ async function loadTrees(genes) {
   const entries = await Promise.all(genes.map(async gene => {
     const path = `${RESULTS_ROOT}/inputs/${gene.segment}_${gene.label_set}.hyphy_ready.treefile`;
     try {
-      const response = await fetch(path);
-      return [gene.gene_id, response.ok ? await response.text() : ""];
+      return [gene.gene_id, await loadText(path, `${gene.gene_id} tree`)];
     } catch {
       return [gene.gene_id, ""];
     }
@@ -112,6 +161,7 @@ function buildGeneRows(data) {
         absrel_branches: 0,
         relax_k: "",
         relax_p: "",
+        relax_q: "",
         mss_models: "",
         test_branches: "",
         background_branches: "",
@@ -126,6 +176,7 @@ function buildGeneRows(data) {
     if (row.method === "RELAX") {
       gene.relax_k = row.k;
       gene.relax_p = row.p_value;
+      gene.relax_q = row.q_value;
     }
     if (row.method === "MSS") gene.mss_models = row.significant_count;
     if (!gene.n_sequences && row.n_sequences) gene.n_sequences = row.n_sequences;
@@ -159,7 +210,7 @@ function evidenceTier(gene, warnings) {
     gene.meme_sites > 0,
     gene.cfel_sites > 0,
     gene.absrel_branches > 0,
-    Number(gene.relax_p) <= 0.05,
+    Number(gene.relax_q || gene.relax_p) <= 0.05,
   ].filter(Boolean).length;
   const severeWarning = warnings.some(w => w.severity === "high");
   if (severeWarning && support > 0) return "Caution";
@@ -185,6 +236,12 @@ function fmt(value, digits = 3) {
   return value;
 }
 
+function siteMetricMeta() {
+  return state.siteMetric === "p"
+    ? { valueKey: "p_value", signalKey: "neg_log10_p", shortLabel: "p", longLabel: "raw p-value" }
+    : { valueKey: "q_value", signalKey: "neg_log10_q", shortLabel: "q", longLabel: "BH FDR q-value" };
+}
+
 function siteQValue(row) {
   const q = Number(row.q_value);
   if (Number.isFinite(q)) return q;
@@ -192,15 +249,38 @@ function siteQValue(row) {
   return Number.isFinite(p) ? p : Infinity;
 }
 
+function siteMetricValue(row) {
+  const metric = siteMetricMeta();
+  const value = Number(row[metric.valueKey]);
+  if (Number.isFinite(value)) return value;
+  return state.siteMetric === "q" ? siteQValue(row) : Infinity;
+}
+
 function siteSignal(row) {
-  const qSignal = Number(row.neg_log10_q);
-  if (Number.isFinite(qSignal)) return qSignal;
-  const pSignal = Number(row.neg_log10_p);
-  return Number.isFinite(pSignal) ? pSignal : 0;
+  const metric = siteMetricMeta();
+  const signal = Number(row[metric.signalKey]);
+  if (Number.isFinite(signal)) return signal;
+  if (state.siteMetric === "q") {
+    const pSignal = Number(row.neg_log10_p);
+    return Number.isFinite(pSignal) ? pSignal : 0;
+  }
+  return 0;
 }
 
 function passesSiteThreshold(row) {
-  return siteQValue(row) <= state.pThreshold;
+  return siteMetricValue(row) <= state.pThreshold;
+}
+
+function siteValueColumns() {
+  return state.siteMetric === "p"
+    ? [
+      { key: "p_value", label: "p" },
+      { key: "q_value", label: "BH q" },
+    ]
+    : [
+      { key: "q_value", label: "BH q" },
+      { key: "p_value", label: "p" },
+    ];
 }
 
 function finiteNumber(value, fallback = 0) {
@@ -239,9 +319,9 @@ function downloadBlob(text, filename, type) {
   URL.revokeObjectURL(url);
 }
 
-function downloadSvg(svgId, filename) {
+function figureSvgSource(svgId) {
   const svg = document.getElementById(svgId);
-  if (!svg) return;
+  if (!svg) return null;
   const clone = svg.cloneNode(true);
   clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
   const style = document.createElementNS("http://www.w3.org/2000/svg", "style");
@@ -254,14 +334,77 @@ function downloadSvg(svgId, filename) {
   `;
   clone.insertBefore(style, clone.firstChild);
   clone.querySelectorAll("title").forEach(title => title.remove());
-  const source = `<?xml version="1.0" encoding="UTF-8"?>\n${new XMLSerializer().serializeToString(clone)}\n`;
+  return {
+    source: `<?xml version="1.0" encoding="UTF-8"?>\n${new XMLSerializer().serializeToString(clone)}\n`,
+    viewBox: clone.getAttribute("viewBox"),
+    width: Number(clone.getAttribute("width")) || 0,
+    height: Number(clone.getAttribute("height")) || 0,
+  };
+}
+
+function downloadSvg(svgId, filename) {
+  const figure = figureSvgSource(svgId);
+  if (!figure) return;
+  const { source } = figure;
   downloadBlob(source, filename, "image/svg+xml;charset=utf-8");
+}
+
+function figureDimensions(figure) {
+  if (figure.viewBox) {
+    const values = figure.viewBox.split(/\s+/).map(Number);
+    if (values.length === 4 && values.every(Number.isFinite)) {
+      return { width: values[2], height: values[3] };
+    }
+  }
+  return {
+    width: figure.width || 1200,
+    height: figure.height || 800,
+  };
+}
+
+function downloadPng(svgId, filename, scale = 4) {
+  const figure = figureSvgSource(svgId);
+  if (!figure) return;
+  const { width, height } = figureDimensions(figure);
+  const image = new Image();
+  const svgBlob = new Blob([figure.source], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(svgBlob);
+  image.onload = () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.ceil(width * scale);
+    canvas.height = Math.ceil(height * scale);
+    const context = canvas.getContext("2d");
+    if (!context) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    URL.revokeObjectURL(url);
+    canvas.toBlob(blob => {
+      if (!blob) return;
+      const pngUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = pngUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(pngUrl);
+    }, "image/png");
+  };
+  image.onerror = () => URL.revokeObjectURL(url);
+  image.src = url;
 }
 
 function exportToolbar({ tableId = "", svgId = "", filename = "selectionscope_export" } = {}) {
   const buttons = [];
   if (tableId) buttons.push(`<button class="export-button" data-export-table="${tableId}" data-filename="${fileSafe(filename)}.tsv">Download table TSV</button>`);
-  if (svgId) buttons.push(`<button class="export-button" data-export-svg="${svgId}" data-filename="${fileSafe(filename)}.svg">Download figure SVG</button>`);
+  if (svgId) {
+    buttons.push(`<button class="export-button" data-export-svg="${svgId}" data-filename="${fileSafe(filename)}.svg">Download figure SVG</button>`);
+    buttons.push(`<button class="export-button" data-export-png="${svgId}" data-filename="${fileSafe(filename)}_4x.png">Download hi-res PNG</button>`);
+  }
   return buttons.length ? `<div class="export-toolbar">${buttons.join("")}</div>` : "";
 }
 
@@ -396,7 +539,7 @@ function barChart(rows, labelKey, valueKey, color = "#2d6cdf", id = "bar-chart",
   </svg>`;
 }
 
-function scatterPlot(rows, { id, title, xKey, yKey, xLabel, yLabel, colorKey = null, sizeKey = null, showLabels = true }) {
+function scatterPlot(rows, { id, title, xKey, yKey, xLabel, yLabel, colorKey = null, sizeKey = null, showLabels = true, className = "" }) {
   const width = 760;
   const height = 330;
   const plot = { left: 68, right: 720, top: 48, bottom: 255 };
@@ -427,7 +570,7 @@ function scatterPlot(rows, { id, title, xKey, yKey, xLabel, yLabel, colorKey = n
       <text class="${labelClass}" x="${x}" y="${y - radius - 6}" text-anchor="middle" font-size="11">${escapeHtml(row.label || "")}</text>
     </g>`;
   }).join("");
-  return `<svg id="${id}" class="chart publication-svg" viewBox="0 0 ${width} ${height}" role="img">
+  return `<svg id="${id}" class="chart ${className} publication-svg" viewBox="0 0 ${width} ${height}" role="img">
     <rect width="${width}" height="${height}" fill="#ffffff"/>
     <text x="${plot.left}" y="24" font-size="15" font-weight="700" fill="#17202a">${escapeHtml(title)}</text>
     ${grid}
@@ -648,30 +791,6 @@ function mssParameterPlot(data, gene, id = `mss-parameters-${fileSafe(gene.gene_
   return barChart(rows, "parameter", "fraction", "#2d6cdf", id, `${gene.gene_id} recurrent MSS parameters`, "Active model fraction");
 }
 
-function memeBranchSupportRows(data, gene, { topN = 80, fdrOnly = false } = {}) {
-  return data.memeBranchEbf
-    .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id)
-    .filter(row => !fdrOnly || siteQValue(row) <= state.pThreshold)
-    .sort((a, b) => {
-      const ebfDelta = finiteNumber(b.reconstructed_ebf, Number.MAX_VALUE) - finiteNumber(a.reconstructed_ebf, Number.MAX_VALUE);
-      if (ebfDelta) return ebfDelta;
-      const posteriorDelta = finiteNumber(b.posterior_positive_class) - finiteNumber(a.posterior_positive_class);
-      if (posteriorDelta) return posteriorDelta;
-      return Number(a.codon || 0) - Number(b.codon || 0);
-    })
-    .slice(0, topN);
-}
-
-function memeBranchSupportPlot(data, gene, id = `meme-branch-support-${fileSafe(gene.gene_id)}`) {
-  const rows = memeBranchSupportRows(data, gene, { topN: 18, fdrOnly: false })
-    .map(row => ({
-      label: `${row.codon}:${row.branch}`,
-      ebf: Math.min(1000, finiteNumber(row.reconstructed_ebf, 1000)),
-      color: row.fdr_status === "strict" ? "#2f8f5b" : row.fdr_status === "candidate" ? "#2d6cdf" : "#c97924",
-    }));
-  return barChart(rows, "label", "ebf", "#2d6cdf", id, `${gene.gene_id} MEME foreground branch support`, "Reconstructed EBF capped at 1000");
-}
-
 function mssPage(data) {
   const gene = data.genes.find(row => row.gene_id === state.selectedRun) ?? data.genes[0];
   const runMss = data.mss.filter(row => `${row.segment}_${row.label_set}` === gene.gene_id);
@@ -759,6 +878,7 @@ function mssPage(data) {
 
 function lollipop(data, gene, { method = "MEME", id = `${method.toLowerCase()}-lollipop-${fileSafe(gene.gene_id)}` } = {}) {
   const isFel = method === "FEL";
+  const metric = siteMetricMeta();
   const sites = (isFel ? data.fel : data.meme)
     .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id && passesSiteThreshold(row))
     .sort((a, b) => a.codon - b.codon);
@@ -803,9 +923,9 @@ function lollipop(data, gene, { method = "MEME", id = `${method.toLowerCase()}-l
     return "#64748b";
   };
   const thresholdSpecs = [
-    { p: 0.1, label: "q = 0.10" },
-    { p: 0.05, label: "q = 0.05" },
-    { p: 0.01, label: "q = 0.01" },
+    { p: 0.1, label: `${metric.shortLabel} = 0.10` },
+    { p: 0.05, label: `${metric.shortLabel} = 0.05` },
+    { p: 0.01, label: `${metric.shortLabel} = 0.01` },
   ];
   const thresholdLines = (isFel
     ? thresholdSpecs.flatMap(item => [
@@ -854,7 +974,7 @@ function lollipop(data, gene, { method = "MEME", id = `${method.toLowerCase()}-l
     const signal = signedFelSignal(site);
     const yy = y(signal);
     const radius = 4 + Math.min(8, (Number(site[effectKey] || 0) / maxEffect) * 8);
-    const borderline = siteQValue(site) > 0.05;
+    const borderline = siteMetricValue(site) > 0.05;
     const shouldLabel = topLabels.includes(site);
     const tooltip = isFel
       ? `Codon ${site.codon}; ${site.direction}; q=${fmt(site.q_value, 3)}; p=${fmt(site.p_value, 3)}; omega ${fmt(site.omega, 3)}; alpha ${fmt(site.alpha, 3)}; beta ${fmt(site.beta, 3)}`
@@ -876,7 +996,7 @@ function lollipop(data, gene, { method = "MEME", id = `${method.toLowerCase()}-l
   return `<svg id="${id}" class="lollipop publication-svg" viewBox="0 0 ${width} ${height}">
     <rect width="${width}" height="${height}" fill="#ffffff"/>
     <text x="44" y="30" font-size="15" font-weight="700" fill="#17202a">${escapeHtml(gene.gene_id)} ${method} site evidence</text>
-    <text x="44" y="50" font-size="12" fill="#4b5563">Sites shown at BH FDR q <= ${state.pThreshold.toFixed(2)}</text>
+    <text x="44" y="50" font-size="12" fill="#4b5563">Sites shown at ${metric.longLabel} <= ${state.pThreshold.toFixed(2)}</text>
     ${isFel ? `<text x="260" y="50" font-size="12" fill="#4b5563">Positive = diversifying; negative = purifying</text>` : ""}
     ${legend}
     <rect x="70" y="${plotTop}" width="780" height="${plotHeight}" fill="#fbfcfe" stroke="#e5eaf1"/>
@@ -888,7 +1008,7 @@ function lollipop(data, gene, { method = "MEME", id = `${method.toLowerCase()}-l
     ${majorTicks}
     ${sticks}
     <text x="460" y="246" text-anchor="middle" font-size="12" fill="#374151">Codon position</text>
-    <text x="18" y="135" transform="rotate(-90 18 135)" text-anchor="middle" font-size="12" fill="#374151">${isFel ? "signed -log10 q-value" : "-log10 q-value"}</text>
+    <text x="18" y="135" transform="rotate(-90 18 135)" text-anchor="middle" font-size="12" fill="#374151">${isFel ? `signed -log10 ${metric.shortLabel}-value` : `-log10 ${metric.shortLabel}-value`}</text>
     ${state.showTestedCodons ? `<text class="tested-codon-rug" x="70" y="268" font-size="11" fill="#374151">All tested codons</text>` : ""}
     ${testedRug}
     ${state.showAlignmentQuality ? `<text x="70" y="279" font-size="11" fill="#374151">Alignment quality: green clean, orange/red higher gap or entropy</text>` : ""}
@@ -1231,7 +1351,7 @@ function relaxEffectPlot(data) {
   const rows = data.relax.map(row => ({
     label: `${row.segment}_${row.label_set}`,
     log2k: Number(row.k) > 0 ? Math.log2(Number(row.k)) : 0,
-    neglogp: Number(row.neg_log10_p || 0),
+    neglogq: Number(row.neg_log10_q || row.neg_log10_p || 0),
     color: Number(row.k) > 1 ? "#2d6cdf" : Number(row.k) < 1 ? "#c97924" : "#8792a2",
     codons: data.genes.find(gene => gene.gene_id === `${row.segment}_${row.label_set}`)?.codons || 1,
   }));
@@ -1239,9 +1359,9 @@ function relaxEffectPlot(data) {
     id: "relax-effect-plot",
     title: "RELAX effect plot",
     xKey: "log2k",
-    yKey: "neglogp",
+    yKey: "neglogq",
     xLabel: "log2(K): relaxation left, intensification right",
-    yLabel: "-log10 p-value",
+    yLabel: "-log10 BH FDR q-value",
     colorKey: "color",
     sizeKey: "codons",
   });
@@ -1251,7 +1371,7 @@ function relaxReliabilityPlot(data) {
   const rows = data.relax.map(row => ({
     label: `${row.segment}_${row.label_set}`,
     test: Number(row.test_branches || 0),
-    neglogp: Number(row.neg_log10_p || 0),
+    neglogq: Number(row.neg_log10_q || row.neg_log10_p || 0),
     color: Number(row.k) > 1 ? "#2d6cdf" : Number(row.k) < 1 ? "#c97924" : "#8792a2",
     codons: data.genes.find(gene => gene.gene_id === `${row.segment}_${row.label_set}`)?.codons || 1,
   }));
@@ -1259,9 +1379,9 @@ function relaxReliabilityPlot(data) {
     id: "relax-reliability-plot",
     title: "RELAX reliability by Test branch count",
     xKey: "test",
-    yKey: "neglogp",
+    yKey: "neglogq",
     xLabel: "Number of RELAX Test branches",
-    yLabel: "-log10 p-value",
+    yLabel: "-log10 BH FDR q-value",
     colorKey: "color",
     sizeKey: "codons",
   });
@@ -1272,7 +1392,7 @@ function absrelEvidencePlot(data, gene = null, id = "absrel-evidence-plot") {
   const rows = source.map(row => ({
     label: `${row.segment}_${row.label_set} ${row.branch}`,
     branchLength: Number(row.branch_length || 0),
-    neglogq: Number(row.neg_log10_corrected_p || 0),
+    neglogq: Number(row.neg_log10_q || row.neg_log10_corrected_p || 0),
     color: row.status === "selected" ? "#c84630" : "#c97924",
   }));
   return scatterPlot(rows, {
@@ -1281,9 +1401,10 @@ function absrelEvidencePlot(data, gene = null, id = "absrel-evidence-plot") {
     xKey: "branchLength",
     yKey: "neglogq",
     xLabel: "Branch length",
-    yLabel: "-log10 corrected p-value",
+    yLabel: "-log10 BH q-value",
     colorKey: "color",
     showLabels: state.absrelShowLabels,
+    className: "absrel-evidence-chart",
   });
 }
 
@@ -1372,7 +1493,7 @@ function interpretation(data, gene) {
   if (gene.meme_sites > 0) support.push(`${gene.meme_sites} foreground MEME episodic candidate sites`);
   if (gene.fel_sites > 0) support.push(`${gene.fel_sites} foreground FEL pervasive candidate sites`);
   if (gene.absrel_branches > 0) support.push(`${gene.absrel_branches} foreground aBSREL selected branch`);
-  if (Number(gene.relax_p) <= 0.05) support.push(`RELAX p=${fmt(gene.relax_p)}`);
+  if (Number(gene.relax_q || gene.relax_p) <= 0.05) support.push(`RELAX q=${fmt(gene.relax_q || gene.relax_p)}`);
   if (Number(gene.mss_models) > 0) support.push(`${gene.mss_models} MSS-GA models evaluated`);
   const relaxText = gene.relax_k === "" ? "" : `RELAX estimates K=${fmt(gene.relax_k)}, interpreted as ${Number(gene.relax_k) > 1 ? "intensified" : Number(gene.relax_k) < 1 ? "relaxed" : "neutral"} selection for this branch set.`;
   return `<div class="interpretation">
@@ -1384,6 +1505,7 @@ function interpretation(data, gene) {
 }
 
 function overview(data) {
+  const metric = siteMetricMeta();
   const completed = data.analysis.filter(row => row.status === "pass").length;
   const notRun = data.analysis.filter(row => row.status === "not_run").length;
   const memeSites = data.meme.filter(passesSiteThreshold).length;
@@ -1396,8 +1518,8 @@ function overview(data) {
       { label: "Runs", value: data.genes.length },
       { label: "Completed method runs", value: completed },
       { label: "Methods not run", value: notRun },
-      { label: "Foreground FEL sites", value: felSites },
-      { label: "Foreground MEME sites", value: memeSites },
+      { label: `Foreground FEL sites (${metric.shortLabel} <= ${state.pThreshold.toFixed(2)})`, value: felSites },
+      { label: `Foreground MEME sites (${metric.shortLabel} <= ${state.pThreshold.toFixed(2)})`, value: memeSites },
       { label: "Foreground aBSREL branches", value: selectedBranches },
       { label: "MSS models", value: mssModels },
       { label: "High warnings", value: highWarnings },
@@ -1466,6 +1588,7 @@ function genesPage(data) {
         { key: "absrel_branches", label: "Foreground aBSREL" },
         { key: "relax_k", label: "RELAX K" },
         { key: "relax_p", label: "RELAX p" },
+        { key: "relax_q", label: "RELAX q" },
         { key: "mss_models", label: "MSS models" },
         { key: "evidence_tier", label: "Evidence", render: value => badge(value) },
       ], "gene_summary_visible")}
@@ -1475,6 +1598,7 @@ function genesPage(data) {
 
 function sitesPage(data) {
   const gene = data.genes.find(row => row.gene_id === state.selectedRun) ?? data.genes[0];
+  const metric = siteMetricMeta();
   const sites = data.meme
     .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id && passesSiteThreshold(row))
     .map(site => {
@@ -1489,7 +1613,6 @@ function sitesPage(data) {
       const warning = Number(quality.gap_fraction || 0) > 0.1 ? "gappy" : Number(quality.entropy || 0) > 1.5 ? "high entropy" : "";
       return { ...site, gap_fraction: quality.gap_fraction ?? "", entropy: quality.entropy ?? "", non_gap_sequences: quality.non_gap_sequences ?? "", warning };
     });
-  const memeBranches = memeBranchSupportRows(data, gene, { topN: 100, fdrOnly: false });
   return `<section class="page grid">
     <section class="panel">
       <h2>Integrated Site-Level Browser</h2>
@@ -1517,8 +1640,7 @@ function sitesPage(data) {
       <h2>Foreground FEL Site Table</h2>
       ${table(felSites, [
         { key: "codon", label: "Codon" },
-        { key: "q_value", label: "BH q" },
-        { key: "p_value", label: "p" },
+        ...siteValueColumns(),
         { key: "alpha", label: "alpha" },
         { key: "beta", label: "beta" },
         { key: "omega", label: "omega" },
@@ -1536,8 +1658,7 @@ function sitesPage(data) {
       <h2>MEME Foreground Site Table</h2>
       ${table(sites, [
         { key: "codon", label: "Codon" },
-        { key: "q_value", label: "BH q" },
-        { key: "p_value", label: "p" },
+        ...siteValueColumns(),
         { key: "omega_plus", label: "omega+" },
         { key: "branch_fraction", label: "Branch fraction" },
         { key: "branches_under_selection", label: "Branches" },
@@ -1548,25 +1669,6 @@ function sitesPage(data) {
         { key: "lrt", label: "LRT" },
         { key: "fdr_status", label: "FDR", render: value => badge(value) },
       ], `${gene.gene_id}_meme_sites_visible`)}
-    </section>
-    <section class="panel">
-      <h2>MEME Foreground Branch EBF Table</h2>
-      <p class="muted">Rows are reconstructed from MEME foreground-branch posterior annotations for raw p <= 0.10 sites; FDR status marks which sites survive BH correction.</p>
-      ${exportToolbar({ svgId: `meme-branch-support-${fileSafe(gene.gene_id)}`, filename: `${gene.gene_id}_meme_branch_support` })}
-      ${memeBranchSupportPlot(data, gene)}
-      ${table(memeBranches, [
-        { key: "codon", label: "Codon" },
-        { key: "branch", label: "Branch" },
-        { key: "reconstructed_ebf", label: "Reconstructed EBF" },
-        { key: "posterior_positive_class", label: "Posterior positive class" },
-        { key: "q_value", label: "BH q" },
-        { key: "p_value", label: "p" },
-        { key: "fdr_status", label: "FDR", render: value => badge(value) },
-        { key: "ebf_ge_100", label: "EBF >= 100" },
-        { key: "reconstructed_codon", label: "Reconstructed codon" },
-        { key: "has_reconstructed_substitution", label: "Has substitution" },
-        { key: "branch_length", label: "Branch length" },
-      ], `${gene.gene_id}_meme_branch_ebf_visible`)}
     </section>
   </section>`;
 }
@@ -1608,6 +1710,7 @@ function branchesPage(data) {
         { key: "label_set", label: "Tree" },
         { key: "branch", label: "Branch" },
         { key: "corrected_p_value", label: "Corrected p" },
+        { key: "q_value", label: "BH q" },
         { key: "lrt", label: "LRT" },
         { key: "branch_length", label: "Branch length" },
         { key: "status", label: "Status", render: value => badge(value) },
@@ -1622,8 +1725,11 @@ function branchesPage(data) {
         { key: "reference_branches", label: "Reference branches" },
         { key: "k", label: "K" },
         { key: "p_value", label: "p" },
+        { key: "q_value", label: "BH q" },
         { key: "interpretation", label: "Interpretation" },
       ], "relax_results_visible")}
+    </section>
+    <section class="panel">
       <h2>MSS Context</h2>
       ${table(data.mss, [
         { key: "segment", label: "Segment" },
@@ -1740,6 +1846,7 @@ function browserPage(data) {
         { key: "absrel_branches", label: "Foreground aBSREL" },
         { key: "relax_k", label: "RELAX K" },
         { key: "relax_p", label: "RELAX p" },
+        { key: "relax_q", label: "RELAX q" },
         { key: "mss_models", label: "MSS models" },
         { key: "evidence_tier", label: "Tier", render: value => badge(value) },
       ], `${gene.gene_id}_evidence_summary`)}
@@ -1788,6 +1895,7 @@ function warningsPage(data) {
 }
 
 function exportPage(data) {
+  const metric = siteMetricMeta();
   return `<section class="page grid">
     <section class="panel">
       <h2>Export</h2>
@@ -1796,7 +1904,7 @@ function exportPage(data) {
         ${Object.values(tableFiles).map(file => `<a class="tab" href="${TABLE_ROOT}/${file}" download>${file}</a>`).join("")}
       </div>
       <h3>Draft Results Text</h3>
-      <p class="interpretation">Across the current hantavirus analyses, foreground-branch FEL identified ${data.fel.filter(row => row.direction === "diversifying" && siteQValue(row) <= 0.1).length} candidate pervasive diversifying sites at BH FDR q <= 0.1, foreground-branch MEME identified ${data.meme.filter(row => siteQValue(row) <= 0.1).length} candidate episodic sites at BH FDR q <= 0.1, foreground aBSREL identified ${data.absrel.filter(row => row.status === "selected").length} selected branches after correction, RELAX found ${data.relax.filter(row => row.significant === true).length} significant branch-set shifts at p <= 0.05, and MSS-GA evaluated ${data.mss.reduce((sum, row) => sum + Number(row.model_count || 0), 0)} synonymous-rate class models. Results should be interpreted with the duplicate-sequence and RELAX convergence warnings shown in the warning panel.</p>
+      <p class="interpretation">Across the current hantavirus analyses, foreground-branch FEL identified ${data.fel.filter(row => row.direction === "diversifying" && passesSiteThreshold(row)).length} candidate pervasive diversifying sites at ${metric.longLabel} <= ${state.pThreshold.toFixed(2)}, foreground-branch MEME identified ${data.meme.filter(passesSiteThreshold).length} candidate episodic sites at ${metric.longLabel} <= ${state.pThreshold.toFixed(2)}, foreground aBSREL identified ${data.absrel.filter(row => row.status === "selected").length} selected branches at per-run BH FDR q <= 0.05, RELAX found ${data.relax.filter(row => row.significant === true).length} significant branch-set shifts at per-run BH FDR q <= 0.05, and MSS-GA evaluated ${data.mss.reduce((sum, row) => sum + Number(row.model_count || 0), 0)} synonymous-rate class models. Results should be interpreted with the duplicate-sequence and RELAX convergence warnings shown in the warning panel.</p>
     </section>
   </section>`;
 }
@@ -1873,6 +1981,11 @@ function render() {
   app.querySelectorAll("[data-export-svg]").forEach(button => {
     button.addEventListener("click", () => {
       downloadSvg(button.dataset.exportSvg, button.dataset.filename || `${button.dataset.exportSvg}.svg`);
+    });
+  });
+  app.querySelectorAll("[data-export-png]").forEach(button => {
+    button.addEventListener("click", () => {
+      downloadPng(button.dataset.exportPng, button.dataset.filename || `${button.dataset.exportPng}_4x.png`);
     });
   });
   attachTreeExploration();

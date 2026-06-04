@@ -174,7 +174,26 @@ results/logs/
 
 ## JavaScript Dashboard
 
-Build the dashboard summary tables and start the browser dashboard:
+Build the dashboard summary tables:
+
+```bash
+bash scripts/build_dashboard.sh
+```
+
+The builder reads HyPhy JSON outputs from `results/ANDV_trees_aln-hyphy/` by
+default and writes normalized TSV files to:
+
+```text
+results/ANDV_trees_aln-hyphy/dashboard_tables/
+```
+
+To build tables for a different results folder:
+
+```bash
+HYPHY_RESULTS_DIR=results/hantavirus_hyphy bash scripts/build_dashboard.sh
+```
+
+To build the dashboard summary tables and start the browser dashboard:
 
 ```bash
 bash scripts/run_js_dashboard.sh
@@ -187,7 +206,7 @@ http://127.0.0.1:8502/dashboard-js/
 ```
 
 This dashboard is a static JavaScript app that reads the normalized TSV tables
-from `results/hantavirus_hyphy/dashboard_tables/`. It summarizes the methods
+from `results/ANDV_trees_aln-hyphy/dashboard_tables/`. It summarizes the methods
 present in this run: FEL, MEME, aBSREL, RELAX, and any opt-in MSS-GA outputs.
 BUSTED, CFEL, and GARD are shown as not run until those outputs are added to
 the workflow.
@@ -218,7 +237,7 @@ branches contributing to each MEME site can be inspected directly.
 Build the dashboard summary tables:
 
 ```bash
-python scripts/build_hyphy_dashboard_tables.py
+bash scripts/build_dashboard.sh
 ```
 
 Open the interactive Streamlit dashboard:
@@ -246,7 +265,7 @@ as not run until those outputs are added to the workflow.
 Dashboard-ready TSV tables are written to:
 
 ```text
-results/hantavirus_hyphy/dashboard_tables/
+results/ANDV_trees_aln-hyphy/dashboard_tables/
 ```
 
 ## Active Scripts
@@ -257,6 +276,7 @@ Only these scripts are part of the current workflow:
 scripts/filter_hyphy_codon_inputs.py
 scripts/run_hantavirus_hyphy_selection.sh
 scripts/build_hyphy_dashboard_tables.py
+scripts/build_dashboard.sh
 scripts/run_js_dashboard.sh
 scripts/run_hyphy_dashboard.sh
 ```

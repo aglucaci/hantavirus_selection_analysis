@@ -17,7 +17,11 @@
         </p>
       </div>
       <div class="threshold-control">
-        <label for="p-threshold">Site FDR q-value threshold</label>
+        <label id="p-threshold-title" for="p-threshold">Site BH FDR q-value threshold</label>
+        <div class="segmented metric-toggle" role="group" aria-label="Site evidence metric">
+          <button class="segment-button active" type="button" data-site-metric="q" aria-pressed="true">q-value</button>
+          <button class="segment-button" type="button" data-site-metric="p" aria-pressed="false">p-value</button>
+        </div>
         <input id="p-threshold" type="range" min="0.01" max="0.20" step="0.01" value="0.10" />
         <output id="p-threshold-label">0.10</output>
       </div>
