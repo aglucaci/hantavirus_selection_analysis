@@ -1,0 +1,9 @@
+Saved HyPhy-ready alignment: results/ANDV_trees_aln-hyphy/inputs/S.hyphy_ready.fasta
+Saved HyPhy-ready tree: results/ANDV_trees_aln-hyphy/inputs/S_ANDVstems.hyphy_ready.treefile
+Saved QC report: results/ANDV_trees_aln-hyphy/inputs/S_ANDVstems.hyphy_ready.qc.tsv
+Alignment records before: 180
+Alignment records kept:   179
+Alignment records dropped:1
+Tree tips before:         180
+Tree tips after:          179
+Dropped KP202360.1: stop_codon 427:TAA

@@ -1,0 +1,8 @@
+Saved HyPhy-ready alignment: results/ANDV_trees_aln-hyphy/inputs/M.hyphy_ready.fasta
+Saved HyPhy-ready tree: results/ANDV_trees_aln-hyphy/inputs/M_ANDVstems.hyphy_ready.treefile
+Saved QC report: results/ANDV_trees_aln-hyphy/inputs/M_ANDVstems.hyphy_ready.qc.tsv
+Alignment records before: 187
+Alignment records kept:   187
+Alignment records dropped:0
+Tree tips before:         187
+Tree tips after:          187

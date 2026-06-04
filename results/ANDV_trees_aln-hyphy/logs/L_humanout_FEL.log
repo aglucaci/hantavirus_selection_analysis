@@ -1,0 +1,116 @@
+
+Analysis Description
+--------------------
+FEL (Fixed Effects Likelihood) estimates site-wise synonymous (&alpha;)
+and non-synonymous (&beta;) rates, and uses a likelihood ratio test to
+determine if beta &neq; alpha at a site. The estimates aggregate
+information over all branches, so the signal is derived from pervasive
+diversification or conservation. A subset of branches can be selected
+for testing as well, in which case an additional (nuisance) parameter
+will be inferred -- the non-synonymous rate on branches NOT selected for
+testing. Multiple partitions within a NEXUS file are also supported for
+recombination - aware analysis. Version 2.5 adds MH support. Version 2.6
+adds substitution mapping. 
+
+- __Requirements__: in-frame codon alignment and a phylogenetic tree
+
+- __Citation__: Not So Different After All: A Comparison of Methods for Detecting Amino
+Acid Sites Under Selection (2005). _Mol Biol Evol_ 22 (5): 1208-1222
+
+- __Written by__: Sergei L Kosakovsky Pond and Simon DW Frost
+
+- __Contact Information__: spond@temple.edu
+
+- __Analysis Version__: 2.6
+
+
+>code => Universal
+
+-------
+>[WARNING]
+'/Users/agl4001/Documents/hantavirus_selection_analysis/results/ANDV_trees_aln-hyphy/inputs/L.hyphy_ready.fasta'
+contains 24 duplicate sequences. Identical sequences do not contribute
+any information to the analysis and only slow down computation. Please
+consider removing duplicate or 'nearly' duplicate sequences, e.g. using
+https://github.com/veg/hyphy-analyses/tree/master/remove-duplicates
+prior to running selection analyses
+-------
+/Users/agl4001/Documents/hantavirus_selection_analysis/results/ANDV_trees_aln-hyphy/inputs/L_humanout.hyphy_ready.treefile
+results/ANDV_trees_aln-hyphy/inputs/L_humanout.hyphy_ready.treefile
+
+>Loaded a multiple sequence alignment with **69** sequences, **2153** codons, and **1** partitions from `/Users/agl4001/Documents/hantavirus_selection_analysis/results/ANDV_trees_aln-hyphy/inputs/L.hyphy_ready.fasta`
+
+>branches => Foreground
+
+>srv => Yes
+
+>multiple-hits => None
+
+>Select the p-value threshold to use when testing for selection (permissible range = [0,1], default value = 0.1): 
+>pvalue => 0.1
+
+>ci => No
+Only analyze sites whose 1-based indices match the following list (null to skip) : 
+>limit-to-sites => null
+For sites whose 1-based indices match the following list, write out likelihood function snapshots (null string to skip) : 
+>save-lf-for-sites => null
+
+>[Advanced setting, will result in MUCH SLOWER run time] Perform parametric bootstrap resampling to derive site-level null LRT distributions up to this many replicates per site. Recommended use for small to medium (<30 sequences) datasets (permissible range = [0,1000], default value = 50, integer): 
+>resample => 0
+
+
+### Branches to include in the FEL analysis
+Selected 66 branches to include in FEL calculations: `PV796318_1, PV808469_1, Node47, PP_006WBLH_2, PP_006XDHK_5, PP_006XDJH_5, Node56, Node54, MN850093_1, MN850094_1, MN850095_1, Node75, Node73, MN258162_1, MN258165_1, MN258170_1, Node87, MN258163_1, MN258185_1, MN258183_1, MN258174_1, Node95, Node93, Node91, MN258177_1, MN258182_1, MN258169_1, MN258175_1, MN258181_1, MN258178_1, MN258180_1, MN258172_1, MN258188_1, MN258184_1, MN258167_1, MN258168_1, MN258187_1, MN258176_1, MN258166_1, MN258171_1, MN258173_1, MN258186_1, MN258164_1, MN258179_1, Node134, Node132, Node130, Node128, Node126, Node124, Node122, Node120, Node118, Node116, Node114, Node112, Node110, Node108, Node106, Node104, Node102, Node100, Node98, Node90, Node86, Node84`
+
+>precision => standard
+
+
+### Obtaining branch lengths and nucleotide substitution biases under the nucleotide GTR model
+
+>kill-zero-lengths => Yes
+
+### Deleted 29 zero-length internal branches: `Node100, Node102, Node104, Node106, Node108, Node110, Node112, Node114, Node116, Node118, Node120, Node122, Node124, Node126, Node128, Node130, Node132, Node134, Node20, Node26, Node36, Node39, Node86, Node87, Node90, Node91, Node93, Node95, Node98`
+* Log(L) = -45340.36, AIC-c = 90966.80 (143 estimated parameters)
+* 1 partition. Total tree length by partition (subs/site)  1.462
+
+### Obtaining the global omega estimate based on relative GTR branch lengths and nucleotide substitution biases
+* Log(L) = -36488.77, AIC-c = 73221.75 (122 estimated parameters)
+* 1 partition. Total tree length by partition (subs/site)  2.265
+* non-synonymous/synonymous rate ratio for *background* =   0.0278
+* non-synonymous/synonymous rate ratio for *test* =   0.0055
+
+>full-model => Yes
+
+### Improving branch lengths, nucleotide substitution biases, and global dN/dS ratios under a full codon model
+* Log(L) = -35784.21, AIC-c = 71812.63 (122 estimated parameters)
+* 1 partition. Total tree length by partition (subs/site)  5.654
+* non-synonymous/synonymous rate ratio for *background* =   0.0099
+* non-synonymous/synonymous rate ratio for *test* =   0.0073
+
+### For partition 1 these sites are significant at p <=0.1
+
+|     Codon      |   Partition    |     alpha      |      beta      |      LRT       |Selection detected?|
+|:--------------:|:--------------:|:--------------:|:--------------:|:--------------:|:-----------------:|
+|      178       |       1        |       13.827   |        0.213   |        2.941   |  Neg. p = 0.0864  |
+|      215       |       1        |       15.546   |        0.001   |        2.871   |  Neg. p = 0.0902  |
+|      308       |       1        |       14.201   |        0.000   |        2.950   |  Neg. p = 0.0859  |
+|      353       |       1        |       17.713   |        0.000   |        3.227   |  Neg. p = 0.0724  |
+|      410       |       1        |        7.904   |        0.000   |        3.185   |  Neg. p = 0.0743  |
+|      455       |       1        |       12.101   |        0.000   |        2.983   |  Neg. p = 0.0842  |
+|      463       |       1        |       21.700   |        0.196   |        3.512   |  Neg. p = 0.0609  |
+|      483       |       1        |        0.161   |        4.660   |        4.167   |  Pos. p = 0.0412  |
+|      551       |       1        |      285.482   |        0.000   |       10.234   |  Neg. p = 0.0014  |
+|      676       |       1        |       10.506   |        0.000   |        2.985   |  Neg. p = 0.0840  |
+|      816       |       1        |        8.860   |        0.000   |        2.963   |  Neg. p = 0.0852  |
+|      836       |       1        |        7.289   |        0.000   |        3.333   |  Neg. p = 0.0679  |
+|      1030      |       1        |        7.676   |        0.000   |        2.884   |  Neg. p = 0.0895  |
+|      1045      |       1        |       18.515   |        0.000   |        3.832   |  Neg. p = 0.0503  |
+|      1160      |       1        |        5.865   |        0.000   |        3.126   |  Neg. p = 0.0771  |
+|      1351      |       1        |        9.849   |        0.000   |        3.082   |  Neg. p = 0.0791  |
+|      1437      |       1        |       11.979   |        0.000   |        3.352   |  Neg. p = 0.0671  |
+|      1525      |       1        |        7.792   |        0.000   |        2.746   |  Neg. p = 0.0975  |
+|      1625      |       1        |        7.972   |        0.000   |        2.853   |  Neg. p = 0.0912  |
+|      1886      |       1        |       11.935   |        0.000   |        2.835   |  Neg. p = 0.0922  |
+|      1971      |       1        |       10.629   |        0.000   |        3.602   |  Neg. p = 0.0577  |
+
+### ** Found _1_ sites under pervasive positive diversifying and _20_ sites under negative selection at p <= 0.1**

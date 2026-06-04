@@ -1,0 +1,110 @@
+
+Analysis Description
+--------------------
+MEME (Mixed Effects Model of Evolution) estimates a site-wise synonymous
+(&alpha;) and a two-category mixture of non-synonymous (&beta;-, with
+proportion p-, and &beta;+ with proportion [1-p-]) rates, and uses a
+likelihood ratio test to determine if &beta;+ > &alpha; at a site. The
+estimates aggregate information over a proportion of branches at a site,
+so the signal is derived from episodic diversification, which is a
+combination of strength of selection [effect size] and the proportion of
+the tree affected. A subset of branches can be selected for testing as
+well, in which case an additional (nuisance) parameter will be inferred
+-- the non-synonymous rate on branches NOT selected for testing.
+Multiple partitions within a NEXUS file are also supported for
+recombination - aware analysis. Version 3.0 adds a different format for
+ancestral state reconstruction, branch-site posterior storage, and
+site-level heterogeneity testing. Version 4 adds support for multiple
+hits and more than 2 rate classes on omega, as well as site-level
+imputation option. Version 4.1 fixes bugs with EBF computation for > 2
+more rates and MH reporting. 
+
+- __Requirements__: in-frame codon alignment and a phylogenetic tree
+
+- __Citation__: Detecting Individual Sites Subject to Episodic Diversifying Selection.
+_PLoS Genet_ 8(7): e1002764.
+
+- __Written by__: Sergei L. Kosakovsky Pond, Steven Weaver
+
+- __Contact Information__: spond@temple.edu
+
+- __Analysis Version__: 4.1
+
+
+>code => Universal
+
+-------
+>[WARNING]
+'/Users/agl4001/Documents/hantavirus_selection_analysis/results/ANDV_trees_aln-hyphy/inputs/M.hyphy_ready.fasta'
+contains 46 duplicate sequences. Identical sequences do not contribute
+any information to the analysis and only slow down computation. Please
+consider removing duplicate or 'nearly' duplicate sequences, e.g. using
+https://github.com/veg/hyphy-analyses/tree/master/remove-duplicates
+prior to running selection analyses
+-------
+/Users/agl4001/Documents/hantavirus_selection_analysis/results/ANDV_trees_aln-hyphy/inputs/M_ANDVall.hyphy_ready.treefile
+results/ANDV_trees_aln-hyphy/inputs/M_ANDVall.hyphy_ready.treefile
+
+>Loaded a multiple sequence alignment with **187** sequences, **1140** codons, and **1** partitions from `/Users/agl4001/Documents/hantavirus_selection_analysis/results/ANDV_trees_aln-hyphy/inputs/M.hyphy_ready.fasta`
+
+>branches => Foreground
+
+>Select the p-value threshold to use when testing for selection (permissible range = [0,1], default value = 0.1): 
+>pvalue => 0.1
+
+>[Advanced setting, will result in MUCH SLOWER run time] Perform parametric bootstrap resampling to derive site-level null LRT distributions up to this many replicates per site. Recommended use for small to medium (<30 sequences) datasets (permissible range = [0,1000], default value = 50, integer): 
+>resample => 0
+The number omega rate classes to include in the model [2 is the strongly recommended default] (permissible range = [2,4], default value = 2, integer): 
+>rates => 2
+
+>multiple-hits => None
+
+>impute-states => No
+
+>precision => standard
+
+
+### Branches to include in the MEME analysis
+Selected 161 branches to include in the MEME analysis: `EU241641_1_EU241655_1, EU241640_1, Node214, EU241639_1_EU241653_1, EU241637_1_EU241651_1, EU241638_1_EU241652_1, Node219, Node217, Node213, EU241650_1_EU241664_1, EU241643_1_EU241657_1, MN850091_1, EU241648_1_EU241662_1, EU241649_1_EU241663_1, Node230, Node228, KC567275_1_KC567264_1, AF291703_2, NC_003467_2, MT956623_1, Node237, Node235, Node233, Node227, Node225, OP555724_1, PV796317_1, PV808468_1, Node245, Node243, KC567278_1_KC567261_1, PP_006XDJH_5, PP_006WBLH_2, PP_006XDHK_5, Node253, Node251, Node249, EU241645_1_EU241659_1, EU241647_1_EU241661_1, Node258, MN258191_1, MN258192_1, Node261, Node257, EU241644_1_EU241658_1, EU241646_1_EU241660_1, DQ189095_1, Node267, KC567281_1_KC567258_1, KC567279_1_KC567260_1, Node270, Node266, Node264, Node256, Node248, Node242, KC567276_1_KC567263_1, KC567280_1_KC567259_1, KC567277_1_KC567262_1, Node276, Node274, MN258190_1, KC567272_1_KC567267_1, KC567273_1_KC567266_1, KC567271_1_KC567268_1, KC567274_1_KC567265_1, KC567270_1_KC567269_1, Node288, Node286, Node284, Node282, Node280, EU241642_1_EU241656_1, PV808471_1, MT956619_1, Node294, Node292, OR405524_1, KY604962_1, Node298, MN258193_1, AF389487_1_AF389492_1_AF389481_1, AF324901_2, Node303, Node301, Node297, Node291, Node279, Node273, Node241, MN850089_1, MN850088_1, MN850090_1, Node309, Node307, MN258189_1, MN850092_1, Node313, MN258194_1, MN258215_1, MN258197_1, MN258196_1, MN258214_1, MN258221_1, MN258211_1, MN258200_1, MN258219_1, MN258217_1, MN258205_1, MN258199_1, MN258210_1, MN258209_1, MN258202_1, MN258222_1, MN258204_1, MN258213_1, MN258203_1, MN258201_1, MN258212_1, MN258216_1, MN258206_1, MN258208_1, MN258220_1, MN258218_1, MN258198_1, MN258195_1, MN258207_1, Node370, Node368, Node366, Node364, Node362, Node360, Node358, Node356, Node354, Node352, Node350, Node348, Node346, Node344, Node342, Node340, Node338, Node336, Node334, Node332, Node330, Node328, Node326, Node324, Node322, Node320, Node318, Node316, Node312, Node306, Node240, Node224, Node222, Node212`
+
+
+### Obtaining branch lengths and nucleotide substitution biases under the nucleotide GTR model
+
+>kill-zero-lengths => Yes
+
+### Deleted 54 zero-length internal branches: `Node101, Node113, Node122, Node140, Node160, Node164, Node189, Node199, Node201, Node237, Node253, Node258, Node264, Node27, Node276, Node284, Node286, Node288, Node30, Node309, Node32, Node320, Node322, Node324, Node326, Node328, Node330, Node332, Node334, Node336, Node338, Node340, Node342, Node344, Node346, Node348, Node350, Node352, Node354, Node356, Node358, Node360, Node362, Node364, Node366, Node368, Node370, Node38, Node39, Node43, Node50, Node54, Node64, Node77`
+* Log(L) = -33912.17, AIC-c = 68582.78 (379 estimated parameters)
+* 1 partition. Total tree length by partition (subs/site)  4.009
+
+### Obtaining the global omega estimate based on relative GTR branch lengths and nucleotide substitution biases
+* Log(L) = -28091.87, AIC-c = 56850.79 (333 estimated parameters)
+* 1 partition. Total tree length by partition (subs/site)  5.597
+* non-synonymous/synonymous rate ratio for *background* =   0.0452
+* non-synonymous/synonymous rate ratio for *test* =   0.0258
+
+>full-model => Yes
+Only analyze sites whose 1-based indices match the following list (null to skip) : 
+>limit-to-sites => null
+For sites whose 1-based indices match the following list, write out likelihood function snapshots (null string to skip) : 
+>save-lf-for-sites => null
+
+### Improving branch lengths, nucleotide substitution biases, and global dN/dS ratios under a full codon model
+* Log(L) = -27665.12
+* Log(L) = -27665.12, AIC-c = 55997.28 (333 estimated parameters)
+* 1 partition. Total tree length by partition (subs/site)  8.984
+* non-synonymous/synonymous rate ratio for *background* =   0.0221
+* non-synonymous/synonymous rate ratio for *test* =   0.0239
+
+### For partition 1 these sites are significant at p <=0.1
+
+|   Codon    | Partition  |   alpha    |non-syn rate (beta) distribution, rates : weights|    LRT     |Episodic selection detected?| # branches |         List of most common codon substitutions at this site          |
+|:----------:|:----------:|:----------:|:-----------------------------------------------:|:----------:|:--------------------------:|:----------:|:---------------------------------------------------------------------:|
+|     2      |     1      |    0.000   |             0.00/162.55 : 0.77/0.23             |    3.200   |      Yes, p =  0.0961      |     1      |                          [1]gaA>gaC,gAa>gTa                           |
+|     61     |     1      |    2.310   |             0.00/185.51 : 0.70/0.30             |    4.302   |      Yes, p =  0.0541      |     3      |                          [3]gaA>gaG,gAg>gGg                           |
+|    125     |     1      |   10.792   |             0.00/556.68 : 0.90/0.10             |    6.175   |      Yes, p =  0.0206      |     1      |                 [2]aaA>aaG|[1]aAA>aGG,AAA>CGT,AAA>TGT                 |
+|    128     |     1      |    0.443   |             0.20/108.74 : 0.77/0.23             |   12.198   |      Yes, p =  0.0010      |     1      |                          [1]aaG>aaA,AAG>GGT                           |
+|    500     |     1      |    0.561   |              0.00/6.01 : 0.01/0.99              |    3.400   |      Yes, p =  0.0866      |     0      |                 [2]Atc>Gtc|[1]atC>atT,Atc>Ctc,Gtc>Atc                 |
+|    889     |     1      |   19.534   |             0.00/924.67 : 0.93/0.07             |    6.756   |      Yes, p =  0.0153      |     1      |[4]ccT>ccA|[2]CCT>GAG|[1]ccA>ccG,CCa>GAa,CCA>GAG,ccC>ccT,CCC>GAG,ccT...|
+|    890     |     1      |   44.291   |            0.07/8456.43 : 0.96/0.04             |    7.158   |      Yes, p =  0.0125      |     1      |   [5]gaA>gaG|[2]GAG>CTC|[1]GAA>ATT,GAA>CTT,GAa>NNa,GAG>CTT,gaG>gaA    |
+
+### ** Found _7_ sites under episodic diversifying positive selection at p <= 0.1**

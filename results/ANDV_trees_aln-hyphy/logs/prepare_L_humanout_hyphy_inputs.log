@@ -1,0 +1,8 @@
+Saved HyPhy-ready alignment: results/ANDV_trees_aln-hyphy/inputs/L.hyphy_ready.fasta
+Saved HyPhy-ready tree: results/ANDV_trees_aln-hyphy/inputs/L_humanout.hyphy_ready.treefile
+Saved QC report: results/ANDV_trees_aln-hyphy/inputs/L_humanout.hyphy_ready.qc.tsv
+Alignment records before: 69
+Alignment records kept:   69
+Alignment records dropped:0
+Tree tips before:         69
+Tree tips after:          69
