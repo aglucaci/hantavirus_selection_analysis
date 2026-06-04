@@ -311,6 +311,7 @@ th {
 
 .pass,
 .selected,
+.strict,
 .very-high,
 .high {
   background: var(--green);
@@ -333,8 +334,13 @@ th {
 }
 
 .moderate,
+.candidate,
 .info {
   background: var(--blue);
+}
+
+.exploratory {
+  background: var(--orange);
 }
 
 .heatmap {
@@ -438,9 +444,9 @@ th {
 }
 
 .tree-scroll {
-  max-height: 720px;
   max-width: 100%;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: visible;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #ffffff;
@@ -448,14 +454,6 @@ th {
 
 .tree-svg.dragging {
   cursor: grabbing;
-}
-
-.tree-scroll:has(.input-tree-svg) {
-  max-height: 720px;
-}
-
-.tree-scroll:has(.linked-tree-svg) {
-  max-height: 720px;
 }
 
 .tree-controls {

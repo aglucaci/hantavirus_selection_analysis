@@ -21,9 +21,12 @@ const tableFiles = {
   dropped: "dropped_sequences.tsv",
   fel: "fel_sites.tsv",
   meme: "meme_sites.tsv",
+  memeBranchEbf: "meme_branch_ebf.tsv",
   absrel: "absrel_branches.tsv",
   relax: "relax_results.tsv",
   mss: "mss_results.tsv",
+  mssModels: "mss_models.tsv",
+  mssParameters: "mss_parameter_frequency.tsv",
   warnings: "warnings.tsv",
   quality: "alignment_quality_by_site.tsv",
 };
@@ -53,6 +56,8 @@ function parseTsv(text) {
 function coerce(value) {
   if (value === "True") return true;
   if (value === "False") return false;
+  if (value === "inf" || value === "Infinity") return Infinity;
+  if (value === "-inf" || value === "-Infinity") return -Infinity;
   if (value === "") return "";
   const number = Number(value);
   return Number.isFinite(number) && String(value).match(/^-?\d+(\.\d+)?(e-?\d+)?$/i) ? number : value;
@@ -180,6 +185,29 @@ function fmt(value, digits = 3) {
   return value;
 }
 
+function siteQValue(row) {
+  const q = Number(row.q_value);
+  if (Number.isFinite(q)) return q;
+  const p = Number(row.p_value);
+  return Number.isFinite(p) ? p : Infinity;
+}
+
+function siteSignal(row) {
+  const qSignal = Number(row.neg_log10_q);
+  if (Number.isFinite(qSignal)) return qSignal;
+  const pSignal = Number(row.neg_log10_p);
+  return Number.isFinite(pSignal) ? pSignal : 0;
+}
+
+function passesSiteThreshold(row) {
+  return siteQValue(row) <= state.pThreshold;
+}
+
+function finiteNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -216,6 +244,15 @@ function downloadSvg(svgId, filename) {
   if (!svg) return;
   const clone = svg.cloneNode(true);
   clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  const style = document.createElementNS("http://www.w3.org/2000/svg", "style");
+  style.textContent = `
+    text { font-family: Inter, Arial, Helvetica, sans-serif; letter-spacing: 0; }
+    line, path, rect, circle { vector-effect: non-scaling-stroke; }
+    .point-label { fill: #0f172a; font-weight: 750; paint-order: stroke; stroke: #ffffff; stroke-linejoin: round; stroke-width: 4px; }
+    .hover-visible { opacity: 1; }
+    .tested-codon-rug, .domain-track-placeholder { display: inline; }
+  `;
+  clone.insertBefore(style, clone.firstChild);
   clone.querySelectorAll("title").forEach(title => title.remove());
   const source = `<?xml version="1.0" encoding="UTF-8"?>\n${new XMLSerializer().serializeToString(clone)}\n`;
   downloadBlob(source, filename, "image/svg+xml;charset=utf-8");
@@ -255,6 +292,7 @@ function tabs() {
     ["genes", "Gene-Level"],
     ["sites", "Site-Level"],
     ["branches", "Branch-Level"],
+    ["mss", "MSS Charts"],
     ["input-trees", "Input Trees"],
     ["browser", "Gene Browser"],
     ["warnings", "Warnings"],
@@ -328,7 +366,8 @@ function barChart(rows, labelKey, valueKey, color = "#2d6cdf", id = "bar-chart",
   const band = width / Math.max(1, rows.length);
   const ticks = [0, 0.25, 0.5, 0.75, 1].map(fraction => {
     const y = 235 - fraction * 185;
-    const label = Math.round(max * fraction);
+    const rawLabel = max * fraction;
+    const label = max <= 1.25 ? rawLabel.toFixed(2) : Math.round(rawLabel);
     return `<g>
       <line x1="58" y1="${y}" x2="720" y2="${y}" stroke="#e5eaf1" />
       <text x="50" y="${y + 4}" text-anchor="end" font-size="11" fill="#4b5563">${label}</text>
@@ -339,8 +378,9 @@ function barChart(rows, labelKey, valueKey, color = "#2d6cdf", id = "bar-chart",
     const barHeight = (value / max) * 185;
     const x = i * band + 70;
     const y = 235 - barHeight;
+    const barColor = row.color || color;
     return `<g>
-      <rect x="${x}" y="${y}" width="${Math.max(20, band - 42)}" height="${barHeight}" fill="${color}" rx="2"></rect>
+      <rect x="${x}" y="${y}" width="${Math.max(20, band - 42)}" height="${barHeight}" fill="${barColor}" rx="2"></rect>
       <text x="${x + Math.max(20, band - 42) / 2}" y="258" text-anchor="middle" font-size="11" fill="#17202a">${escapeHtml(row[labelKey])}</text>
       <text x="${x + Math.max(20, band - 42) / 2}" y="${Math.max(38, y - 7)}" text-anchor="middle" font-size="11" fill="#17202a">${value}</text>
     </g>`;
@@ -399,6 +439,56 @@ function scatterPlot(rows, { id, title, xKey, yKey, xLabel, yLabel, colorKey = n
   </svg>`;
 }
 
+function linePlot(rows, { id, title, xKey, yKey, xLabel, yLabel, color = "#2d6cdf", labelKey = null }) {
+  const width = 820;
+  const height = 340;
+  const plot = { left: 72, right: 780, top: 50, bottom: 265 };
+  const xValues = rows.map(row => Number(row[xKey])).filter(Number.isFinite);
+  const yValues = rows.map(row => Number(row[yKey])).filter(Number.isFinite);
+  if (!xValues.length || !yValues.length) {
+    return `<svg id="${id}" class="chart publication-svg" viewBox="0 0 ${width} ${height}" role="img">
+      <rect width="${width}" height="${height}" fill="#ffffff"/>
+      <text x="${plot.left}" y="28" font-size="15" font-weight="700" fill="#17202a">${escapeHtml(title)}</text>
+      <text x="${plot.left}" y="70" font-size="12" fill="#637083">No plottable rows.</text>
+    </svg>`;
+  }
+  const xMin = Math.min(...xValues);
+  const xMax = Math.max(...xValues);
+  const yMin = Math.min(0, ...yValues);
+  const yMax = Math.max(1, ...yValues);
+  const xScale = value => plot.left + ((Number(value) - xMin) / Math.max(1e-9, xMax - xMin)) * (plot.right - plot.left);
+  const yScale = value => plot.bottom - ((Number(value) - yMin) / Math.max(1e-9, yMax - yMin)) * (plot.bottom - plot.top);
+  const ticks = [0, 0.25, 0.5, 0.75, 1];
+  const grid = ticks.map(fraction => {
+    const yTick = yMin + fraction * (yMax - yMin);
+    const yy = yScale(yTick);
+    return `<g>
+      <line x1="${plot.left}" y1="${yy}" x2="${plot.right}" y2="${yy}" stroke="#e5eaf1"/>
+      <text x="${plot.left - 10}" y="${yy + 4}" text-anchor="end" font-size="11" fill="#4b5563">${fmt(yTick, 2)}</text>
+    </g>`;
+  }).join("");
+  const ordered = [...rows]
+    .filter(row => Number.isFinite(Number(row[xKey])) && Number.isFinite(Number(row[yKey])))
+    .sort((a, b) => Number(a[xKey]) - Number(b[xKey]));
+  const path = ordered.map((row, index) => `${index ? "L" : "M"} ${xScale(row[xKey])} ${yScale(row[yKey])}`).join(" ");
+  const points = ordered.filter((_, index) => index % Math.max(1, Math.floor(ordered.length / 80)) === 0).map(row => (
+    `<circle cx="${xScale(row[xKey])}" cy="${yScale(row[yKey])}" r="3" fill="${color}">
+      <title>${escapeHtml(labelKey ? row[labelKey] : `${xKey} ${fmt(row[xKey])}; ${yKey} ${fmt(row[yKey])}`)}</title>
+    </circle>`
+  )).join("");
+  return `<svg id="${id}" class="chart publication-svg" viewBox="0 0 ${width} ${height}" role="img">
+    <rect width="${width}" height="${height}" fill="#ffffff"/>
+    <text x="${plot.left}" y="28" font-size="15" font-weight="700" fill="#17202a">${escapeHtml(title)}</text>
+    ${grid}
+    <line x1="${plot.left}" y1="${plot.bottom}" x2="${plot.right}" y2="${plot.bottom}" stroke="#17202a"/>
+    <line x1="${plot.left}" y1="${plot.top}" x2="${plot.left}" y2="${plot.bottom}" stroke="#17202a"/>
+    <path d="${path}" fill="none" stroke="${color}" stroke-width="2.2"/>
+    ${points}
+    <text x="${(plot.left + plot.right) / 2}" y="318" text-anchor="middle" font-size="12" fill="#374151">${escapeHtml(xLabel)}</text>
+    <text x="18" y="${(plot.top + plot.bottom) / 2}" transform="rotate(-90 18 ${(plot.top + plot.bottom) / 2})" text-anchor="middle" font-size="12" fill="#374151">${escapeHtml(yLabel)}</text>
+  </svg>`;
+}
+
 function getTicks(geneLength) {
   if (geneLength <= 300) return { major: 50, minor: 10 };
   if (geneLength <= 1000) return { major: 100, minor: 25 };
@@ -425,7 +515,7 @@ function bubblePlot(data, id = "selection-burden-bubble") {
     const color = palette[index % palette.length];
     return `<g class="bubble" data-run="${gene.gene_id}">
       <circle cx="${x}" cy="${y}" r="${r}" fill="${color}" stroke="#17202a" stroke-width="1.1" opacity="0.82">
-        <title>${escapeHtml(gene.gene_id)}; MEME ${gene.meme_sites}; aBSREL ${gene.absrel_branches}</title>
+        <title>${escapeHtml(gene.gene_id)}; foreground MEME ${gene.meme_sites}; foreground aBSREL ${gene.absrel_branches}</title>
       </circle>
       <text x="${x}" y="${y + 4}" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">${index + 1}</text>
     </g>`;
@@ -446,18 +536,231 @@ function bubblePlot(data, id = "selection-burden-bubble") {
     <line x1="60" y1="170" x2="650" y2="170" stroke="#e5eaf1"/>
     <line x1="60" y1="230" x2="650" y2="230" stroke="#8792a2"/>
     <line x1="60" y1="40" x2="60" y2="230" stroke="#8792a2"/>
-    <text x="355" y="280" text-anchor="middle" font-size="12" fill="#374151">aBSREL selected branches</text>
-    <text x="18" y="145" transform="rotate(-90 18 145)" text-anchor="middle" font-size="12" fill="#374151">MEME candidate sites</text>
+    <text x="355" y="280" text-anchor="middle" font-size="12" fill="#374151">Foreground aBSREL selected branches</text>
+    <text x="18" y="145" transform="rotate(-90 18 145)" text-anchor="middle" font-size="12" fill="#374151">Foreground MEME candidate sites</text>
     <text x="700" y="30" font-size="12" font-weight="700" fill="#374151">Runs</text>
     ${points}
     ${legend}
   </svg>`;
 }
 
+function mssRunSummaryPlot(data, id = "mss-run-summary-plot") {
+  const rows = data.mss.map(row => ({
+    label: `${row.segment}_${row.label_set}`,
+    models: Number(row.model_count || 0),
+    active: Number(row.median_active_parameters || 0),
+    color: row.segment === "L" ? "#2d6cdf" : row.segment === "M" ? "#138a8a" : "#c97924",
+  }));
+  const width = 900;
+  const height = 340;
+  const plot = { left: 70, right: 640, top: 52, bottom: 262 };
+  const xMax = Math.max(1, ...rows.map(row => row.active));
+  const yMax = Math.max(1, ...rows.map(row => row.models));
+  const xScale = value => plot.left + (Number(value) / xMax) * (plot.right - plot.left);
+  const yScale = value => plot.bottom - (Number(value) / yMax) * (plot.bottom - plot.top);
+  const ticks = [0, 0.25, 0.5, 0.75, 1];
+  const grid = [
+    ...ticks.map(fraction => {
+      const xx = plot.left + fraction * (plot.right - plot.left);
+      const label = Math.round(xMax * fraction);
+      return `<g><line x1="${xx}" y1="${plot.top}" x2="${xx}" y2="${plot.bottom}" stroke="#e5eaf1"/><text x="${xx}" y="${plot.bottom + 18}" text-anchor="middle" font-size="11" fill="#4b5563">${label}</text></g>`;
+    }),
+    ...ticks.map(fraction => {
+      const yy = plot.bottom - fraction * (plot.bottom - plot.top);
+      const label = Math.round(yMax * fraction);
+      return `<g><line x1="${plot.left}" y1="${yy}" x2="${plot.right}" y2="${yy}" stroke="#e5eaf1"/><text x="${plot.left - 10}" y="${yy + 4}" text-anchor="end" font-size="11" fill="#4b5563">${label}</text></g>`;
+    }),
+  ].join("");
+  const points = rows.map((row, index) => `<g>
+    <circle cx="${xScale(row.active)}" cy="${yScale(row.models)}" r="7" fill="${row.color}" stroke="#17202a" stroke-width="0.9">
+      <title>${escapeHtml(row.label)}; median active ${row.active}; models ${row.models}</title>
+    </circle>
+    <text x="${xScale(row.active)}" y="${yScale(row.models) + 4}" text-anchor="middle" font-size="10" font-weight="800" fill="#ffffff">${index + 1}</text>
+  </g>`).join("");
+  const legend = rows.map((row, index) => `<g>
+    <circle cx="690" cy="${62 + index * 22}" r="5.5" fill="${row.color}" stroke="#17202a" stroke-width="0.8"/>
+    <text x="704" y="${66 + index * 22}" font-size="11" fill="#17202a">${index + 1}. ${escapeHtml(row.label)}</text>
+  </g>`).join("");
+  return `<svg id="${id}" class="chart publication-svg" viewBox="0 0 ${width} ${height}" role="img">
+    <rect width="${width}" height="${height}" fill="#ffffff"/>
+    <text x="${plot.left}" y="28" font-size="15" font-weight="700" fill="#17202a">MSS-GA search breadth by run</text>
+    ${grid}
+    <line x1="${plot.left}" y1="${plot.bottom}" x2="${plot.right}" y2="${plot.bottom}" stroke="#17202a"/>
+    <line x1="${plot.left}" y1="${plot.top}" x2="${plot.left}" y2="${plot.bottom}" stroke="#17202a"/>
+    ${points}
+    <text x="${(plot.left + plot.right) / 2}" y="318" text-anchor="middle" font-size="12" fill="#374151">Median active synonymous parameters per model</text>
+    <text x="18" y="${(plot.top + plot.bottom) / 2}" transform="rotate(-90 18 ${(plot.top + plot.bottom) / 2})" text-anchor="middle" font-size="12" fill="#374151">Models evaluated</text>
+    <text x="686" y="36" font-size="12" font-weight="700" fill="#374151">Runs</text>
+    ${legend}
+  </svg>`;
+}
+
+function mssModelFrontierPlot(data, gene, id = `mss-frontier-${fileSafe(gene.gene_id)}`) {
+  const rows = data.mssModels
+    .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id)
+    .filter(row => Number(row.rank) <= 250)
+    .map(row => ({
+      ...row,
+      label: `Rank ${row.rank}; delta IC ${fmt(row.delta_ic)}; active ${row.active_parameters}`,
+    }));
+  return linePlot(rows, {
+    id,
+    title: `${gene.gene_id} MSS-GA model frontier`,
+    xKey: "rank",
+    yKey: "delta_ic",
+    xLabel: "Model rank by information criterion",
+    yLabel: "Delta IC from best model",
+    color: "#138a8a",
+    labelKey: "label",
+  });
+}
+
+function mssComplexityPlot(data, gene, id = `mss-complexity-${fileSafe(gene.gene_id)}`) {
+  const rows = data.mssModels
+    .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id)
+    .filter(row => Number(row.rank) <= 500)
+    .map(row => ({
+      label: `Rank ${row.rank}`,
+      active: Number(row.active_parameters || 0),
+      delta: Number(row.delta_ic || 0),
+      color: Number(row.delta_ic || 0) <= 2 ? "#2f8f5b" : Number(row.delta_ic || 0) <= 10 ? "#c97924" : "#8792a2",
+      rank: Number(row.rank || 0),
+    }));
+  return scatterPlot(rows, {
+    id,
+    title: `${gene.gene_id} MSS-GA complexity/evidence`,
+    xKey: "active",
+    yKey: "delta",
+    xLabel: "Active synonymous parameters",
+    yLabel: "Delta IC from best model",
+    colorKey: "color",
+    sizeKey: "rank",
+    showLabels: false,
+  });
+}
+
+function mssParameterPlot(data, gene, id = `mss-parameters-${fileSafe(gene.gene_id)}`) {
+  const rows = data.mssParameters
+    .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id)
+    .sort((a, b) => Number(b.active_fraction || 0) - Number(a.active_fraction || 0))
+    .slice(0, 14)
+    .map(row => ({ parameter: String(row.parameter).replace("alpha_", ""), fraction: Number(row.active_fraction || 0) }));
+  return barChart(rows, "parameter", "fraction", "#2d6cdf", id, `${gene.gene_id} recurrent MSS parameters`, "Active model fraction");
+}
+
+function memeBranchSupportRows(data, gene, { topN = 80, fdrOnly = false } = {}) {
+  return data.memeBranchEbf
+    .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id)
+    .filter(row => !fdrOnly || siteQValue(row) <= state.pThreshold)
+    .sort((a, b) => {
+      const ebfDelta = finiteNumber(b.reconstructed_ebf, Number.MAX_VALUE) - finiteNumber(a.reconstructed_ebf, Number.MAX_VALUE);
+      if (ebfDelta) return ebfDelta;
+      const posteriorDelta = finiteNumber(b.posterior_positive_class) - finiteNumber(a.posterior_positive_class);
+      if (posteriorDelta) return posteriorDelta;
+      return Number(a.codon || 0) - Number(b.codon || 0);
+    })
+    .slice(0, topN);
+}
+
+function memeBranchSupportPlot(data, gene, id = `meme-branch-support-${fileSafe(gene.gene_id)}`) {
+  const rows = memeBranchSupportRows(data, gene, { topN: 18, fdrOnly: false })
+    .map(row => ({
+      label: `${row.codon}:${row.branch}`,
+      ebf: Math.min(1000, finiteNumber(row.reconstructed_ebf, 1000)),
+      color: row.fdr_status === "strict" ? "#2f8f5b" : row.fdr_status === "candidate" ? "#2d6cdf" : "#c97924",
+    }));
+  return barChart(rows, "label", "ebf", "#2d6cdf", id, `${gene.gene_id} MEME foreground branch support`, "Reconstructed EBF capped at 1000");
+}
+
+function mssPage(data) {
+  const gene = data.genes.find(row => row.gene_id === state.selectedRun) ?? data.genes[0];
+  const runMss = data.mss.filter(row => `${row.segment}_${row.label_set}` === gene.gene_id);
+  const runModels = data.mssModels
+    .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id)
+    .filter(row => Number(row.rank) <= 100);
+  const runParameters = data.mssParameters
+    .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id)
+    .sort((a, b) => Number(b.active_fraction || 0) - Number(a.active_fraction || 0))
+    .slice(0, 30);
+  return `<section class="page grid">
+    <section class="panel">
+      <div class="panel-title-row">
+        <div>
+          <h2>MSS-GA Synonymous-Rate Model Charts</h2>
+          <p class="muted">Use these plots to separate model search breadth, near-optimal model complexity, and repeatedly selected synonymous substitution parameters.</p>
+        </div>
+        ${runPicker(data, gene)}
+      </div>
+    </section>
+    <div class="grid two-col">
+      <section class="panel">
+        <h2>Across-Run MSS Summary</h2>
+        ${exportToolbar({ svgId: "mss-run-summary-plot", filename: "mss_run_summary_plot" })}
+        ${mssRunSummaryPlot(data)}
+      </section>
+      <section class="panel">
+        <h2>Model Frontier</h2>
+        ${exportToolbar({ svgId: `mss-frontier-${fileSafe(gene.gene_id)}`, filename: `${gene.gene_id}_mss_model_frontier` })}
+        ${mssModelFrontierPlot(data, gene)}
+      </section>
+    </div>
+    <div class="grid two-col">
+      <section class="panel">
+        <h2>Complexity Versus Fit</h2>
+        ${exportToolbar({ svgId: `mss-complexity-${fileSafe(gene.gene_id)}`, filename: `${gene.gene_id}_mss_complexity` })}
+        ${mssComplexityPlot(data, gene)}
+      </section>
+      <section class="panel">
+        <h2>Recurrent Synonymous Parameters</h2>
+        ${exportToolbar({ svgId: `mss-parameters-${fileSafe(gene.gene_id)}`, filename: `${gene.gene_id}_mss_parameter_frequency` })}
+        ${mssParameterPlot(data, gene)}
+      </section>
+    </div>
+    <section class="panel">
+      <h2>MSS Run Summary</h2>
+      ${table(runMss, [
+        { key: "segment", label: "Segment" },
+        { key: "label_set", label: "Tree" },
+        { key: "files", label: "Files" },
+        { key: "model_count", label: "Models" },
+        { key: "best_ic", label: "Best IC" },
+        { key: "min_active_parameters", label: "Min active" },
+        { key: "median_active_parameters", label: "Median active" },
+        { key: "max_active_parameters", label: "Max active" },
+        { key: "top_parameter", label: "Top parameter" },
+        { key: "top_parameter_frequency", label: "Top frequency" },
+      ], `${gene.gene_id}_mss_summary_visible`)}
+    </section>
+    <div class="grid two-col">
+      <section class="panel">
+        <h2>Top MSS Models</h2>
+        ${table(runModels, [
+          { key: "rank", label: "Rank" },
+          { key: "ic", label: "IC" },
+          { key: "delta_ic", label: "Delta IC" },
+          { key: "log_likelihood", label: "Log likelihood" },
+          { key: "active_parameters", label: "Active params" },
+          { key: "class_count", label: "Classes" },
+          { key: "class_rates", label: "Class rates" },
+        ], `${gene.gene_id}_mss_top_models_visible`)}
+      </section>
+      <section class="panel">
+        <h2>Top MSS Parameters</h2>
+        ${table(runParameters, [
+          { key: "parameter", label: "Parameter" },
+          { key: "active_models", label: "Active models" },
+          { key: "model_count", label: "Models" },
+          { key: "active_fraction", label: "Active fraction" },
+        ], `${gene.gene_id}_mss_parameters_visible`)}
+      </section>
+    </div>
+  </section>`;
+}
+
 function lollipop(data, gene, { method = "MEME", id = `${method.toLowerCase()}-lollipop-${fileSafe(gene.gene_id)}` } = {}) {
   const isFel = method === "FEL";
   const sites = (isFel ? data.fel : data.meme)
-    .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id && Number(row.p_value) <= state.pThreshold)
+    .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id && passesSiteThreshold(row))
     .sort((a, b) => a.codon - b.codon);
   const width = 900;
   const height = 360;
@@ -468,7 +771,7 @@ function lollipop(data, gene, { method = "MEME", id = `${method.toLowerCase()}-l
   const plotTop = 76;
   const plotBottom = 205;
   const plotHeight = plotBottom - plotTop;
-  const maxSignal = Math.max(3, ...sites.map(site => Number(site.neg_log10_p || 0)).filter(Number.isFinite));
+  const maxSignal = Math.max(3, ...sites.map(siteSignal).filter(Number.isFinite));
   const yMax = Math.ceil(maxSignal * 1.18 * 10) / 10;
   const zeroY = isFel ? plotTop + plotHeight / 2 : plotBottom;
   const y = value => {
@@ -480,9 +783,9 @@ function lollipop(data, gene, { method = "MEME", id = `${method.toLowerCase()}-l
     return plotBottom - (Math.min(yMax, Math.max(0, numeric)) / yMax) * plotHeight;
   };
   const signedFelSignal = site => {
-    if (!isFel) return Number(site.neg_log10_p || 0);
-    if (site.direction === "purifying") return -Number(site.neg_log10_p || 0);
-    if (site.direction === "diversifying") return Number(site.neg_log10_p || 0);
+    if (!isFel) return siteSignal(site);
+    if (site.direction === "purifying") return -siteSignal(site);
+    if (site.direction === "diversifying") return siteSignal(site);
     return 0;
   };
   const effectKey = isFel ? "omega" : "omega_plus";
@@ -500,9 +803,9 @@ function lollipop(data, gene, { method = "MEME", id = `${method.toLowerCase()}-l
     return "#64748b";
   };
   const thresholdSpecs = [
-    { p: 0.1, label: "p = 0.10" },
-    { p: 0.05, label: "p = 0.05" },
-    { p: 0.01, label: "p = 0.01" },
+    { p: 0.1, label: "q = 0.10" },
+    { p: 0.05, label: "q = 0.05" },
+    { p: 0.01, label: "q = 0.01" },
   ];
   const thresholdLines = (isFel
     ? thresholdSpecs.flatMap(item => [
@@ -545,17 +848,17 @@ function lollipop(data, gene, { method = "MEME", id = `${method.toLowerCase()}-l
       <title>Codons ${start}-${end}; mean gap ${fmt(gap, 2)}; mean entropy ${fmt(entropy, 2)}</title>
     </rect>`;
   }).join("") : "";
-  const topLabels = [...sites].sort((a, b) => Number(b.neg_log10_p || 0) - Number(a.neg_log10_p || 0)).slice(0, 5);
+  const topLabels = [...sites].sort((a, b) => siteSignal(b) - siteSignal(a)).slice(0, 5);
   const sticks = sites.map(site => {
     const xx = x(site.codon);
     const signal = signedFelSignal(site);
     const yy = y(signal);
     const radius = 4 + Math.min(8, (Number(site[effectKey] || 0) / maxEffect) * 8);
-    const borderline = Number(site.p_value) > 0.05;
+    const borderline = siteQValue(site) > 0.05;
     const shouldLabel = topLabels.includes(site);
     const tooltip = isFel
-      ? `Codon ${site.codon}; ${site.direction}; p=${fmt(site.p_value, 3)}; omega ${fmt(site.omega, 3)}; alpha ${fmt(site.alpha, 3)}; beta ${fmt(site.beta, 3)}`
-      : `Codon ${site.codon}; p=${fmt(site.p_value, 3)}; omega+ ${fmt(site.omega_plus, 3)}; branches ${fmt(site.branches_under_selection)}`;
+      ? `Codon ${site.codon}; ${site.direction}; q=${fmt(site.q_value, 3)}; p=${fmt(site.p_value, 3)}; omega ${fmt(site.omega, 3)}; alpha ${fmt(site.alpha, 3)}; beta ${fmt(site.beta, 3)}`
+      : `Codon ${site.codon}; q=${fmt(site.q_value, 3)}; p=${fmt(site.p_value, 3)}; omega+ ${fmt(site.omega_plus, 3)}; branches ${fmt(site.branches_under_selection)}`;
     return `<g>
       <line x1="${xx}" y1="${zeroY}" x2="${xx}" y2="${yy}" stroke="${siteColor(site)}" stroke-width="1.5" opacity="${borderline ? 0.55 : 1}" />
       <circle cx="${xx}" cy="${yy}" r="${radius}" fill="${siteColor(site)}" stroke="${siteStroke(site)}" stroke-width="1.2" opacity="${borderline ? 0.62 : 0.95}">
@@ -573,7 +876,7 @@ function lollipop(data, gene, { method = "MEME", id = `${method.toLowerCase()}-l
   return `<svg id="${id}" class="lollipop publication-svg" viewBox="0 0 ${width} ${height}">
     <rect width="${width}" height="${height}" fill="#ffffff"/>
     <text x="44" y="30" font-size="15" font-weight="700" fill="#17202a">${escapeHtml(gene.gene_id)} ${method} site evidence</text>
-    <text x="44" y="50" font-size="12" fill="#4b5563">Sites shown at p <= ${state.pThreshold.toFixed(2)}</text>
+    <text x="44" y="50" font-size="12" fill="#4b5563">Sites shown at BH FDR q <= ${state.pThreshold.toFixed(2)}</text>
     ${isFel ? `<text x="260" y="50" font-size="12" fill="#4b5563">Positive = diversifying; negative = purifying</text>` : ""}
     ${legend}
     <rect x="70" y="${plotTop}" width="780" height="${plotHeight}" fill="#fbfcfe" stroke="#e5eaf1"/>
@@ -585,7 +888,7 @@ function lollipop(data, gene, { method = "MEME", id = `${method.toLowerCase()}-l
     ${majorTicks}
     ${sticks}
     <text x="460" y="246" text-anchor="middle" font-size="12" fill="#374151">Codon position</text>
-    <text x="18" y="135" transform="rotate(-90 18 135)" text-anchor="middle" font-size="12" fill="#374151">${isFel ? "signed -log10 p-value" : "-log10 p-value"}</text>
+    <text x="18" y="135" transform="rotate(-90 18 135)" text-anchor="middle" font-size="12" fill="#374151">${isFel ? "signed -log10 q-value" : "-log10 q-value"}</text>
     ${state.showTestedCodons ? `<text class="tested-codon-rug" x="70" y="268" font-size="11" fill="#374151">All tested codons</text>` : ""}
     ${testedRug}
     ${state.showAlignmentQuality ? `<text x="70" y="279" font-size="11" fill="#374151">Alignment quality: green clean, orange/red higher gap or entropy</text>` : ""}
@@ -724,10 +1027,10 @@ function treePanel(data, gene, id = `tree-${fileSafe(gene.gene_id)}`) {
   const rowHeight = gene.segment === "S" ? 9 : 13;
   const bottomPadding = 72;
   const height = Math.max(520, 92 + leaves.length * rowHeight + bottomPadding);
-  const viewportHeight = Math.min(height, 1120);
+  const viewportHeight = height;
   const baseViewBox = defaultTreeViewBox(width, viewportHeight);
   const storedViewBox = state.treeViewBoxes[id];
-  const viewBox = storedViewBox && storedViewBox.height <= viewportHeight * 1.5 ? storedViewBox : baseViewBox;
+  const viewBox = storedViewBox && storedViewBox.height <= viewportHeight * 1.5 && storedViewBox.width <= width * 1.5 ? storedViewBox : baseViewBox;
   const x = depth => 58 + (depth / maxDepth) * 650;
   const y = node => 58 + node.y * rowHeight;
   const scaleBar = treeScaleBar({ xStart: 58, yStart: viewportHeight - 44, pixelsPerDepth: 650 / maxDepth, maxDepth });
@@ -743,7 +1046,7 @@ function treePanel(data, gene, id = `tree-${fileSafe(gene.gene_id)}`) {
       const color = isSelected ? "#c84630" : child.isTest ? "#2d6cdf" : "#8792a2";
       const strokeWidth = isSelected ? 3.2 : child.isTest ? 2.1 : 1.2;
       branches.push(`<line x1="${x(node.depth)}" y1="${y(child)}" x2="${x(child.depth)}" y2="${y(child)}" stroke="${isLong ? "#c97924" : color}" stroke-width="${strokeWidth}" ${isLong ? 'stroke-dasharray="5 3"' : ""}>
-        <title>${escapeHtml(child.name)}; ${child.isTest ? "RELAX Test" : "Background"}; length ${fmt(child.length, 3)}${isSelected ? "; aBSREL selected" : ""}</title>
+        <title>${escapeHtml(child.name)}; ${child.isTest ? "RELAX Test" : "Background"}; length ${fmt(child.length, 3)}${isSelected ? "; foreground aBSREL selected" : ""}</title>
       </line>`);
       draw(child);
     }
@@ -762,8 +1065,8 @@ function treePanel(data, gene, id = `tree-${fileSafe(gene.gene_id)}`) {
   <div class="tree-scroll">
   <svg id="${id}" class="tree-svg linked-tree-svg publication-svg zoomable-tree" viewBox="${viewBoxString(viewBox)}" width="${width}" height="${viewportHeight}" data-base-viewbox="${viewBoxString(baseViewBox)}" data-zoomable-tree="true" role="img">
     <rect width="${width}" height="${height}" fill="#ffffff"/>
-    <text x="24" y="24" font-size="15" font-weight="700" fill="#17202a">${escapeHtml(gene.gene_id)} RELAX/aBSREL tree view</text>
-    <text x="24" y="43" font-size="11" fill="#4b5563">Blue = RELAX Test branches; gray = Background; red = aBSREL selected; dashed orange = long branch</text>
+    <text x="24" y="24" font-size="15" font-weight="700" fill="#17202a">${escapeHtml(gene.gene_id)} RELAX/foreground aBSREL tree view</text>
+    <text x="24" y="43" font-size="11" fill="#4b5563">Blue = RELAX Test branches; gray = Background; red = foreground aBSREL selected; dashed orange = long branch</text>
     ${branches.join("")}
     ${leafLabels}
     ${scaleBar}
@@ -838,10 +1141,10 @@ function inputTreePanel(data, gene, visibleAnnotations, id = `input-tree-${fileS
   const rowHeight = leaves.length > 140 ? 7 : leaves.length > 90 ? 9 : 12;
   const bottomPadding = 72;
   const height = Math.max(520, 96 + leaves.length * rowHeight + bottomPadding);
-  const viewportHeight = Math.min(height, 960);
+  const viewportHeight = height;
   const baseViewBox = defaultTreeViewBox(width, viewportHeight);
   const storedViewBox = state.treeViewBoxes[id];
-  const viewBox = storedViewBox && storedViewBox.height <= viewportHeight * 1.5 ? storedViewBox : baseViewBox;
+  const viewBox = storedViewBox && storedViewBox.height <= viewportHeight * 1.5 && storedViewBox.width <= width * 1.5 ? storedViewBox : baseViewBox;
   const x = depth => 58 + (depth / maxDepth) * 670;
   const y = node => 62 + node.y * rowHeight;
   const scaleBar = treeScaleBar({ xStart: 58, yStart: viewportHeight - 44, pixelsPerDepth: 670 / maxDepth, maxDepth });
@@ -974,7 +1277,7 @@ function absrelEvidencePlot(data, gene = null, id = "absrel-evidence-plot") {
   }));
   return scatterPlot(rows, {
     id,
-    title: gene ? `${gene.gene_id} aBSREL branch evidence` : "aBSREL branch evidence",
+    title: gene ? `${gene.gene_id} foreground aBSREL branch evidence` : "Foreground aBSREL branch evidence",
     xKey: "branchLength",
     yKey: "neglogq",
     xLabel: "Branch length",
@@ -1066,9 +1369,9 @@ function attachTreeExploration() {
 function interpretation(data, gene) {
   const warnings = getWarnings(gene, data.warnings);
   const support = [];
-  if (gene.meme_sites > 0) support.push(`${gene.meme_sites} MEME episodic candidate sites`);
-  if (gene.fel_sites > 0) support.push(`${gene.fel_sites} FEL pervasive candidate sites`);
-  if (gene.absrel_branches > 0) support.push(`${gene.absrel_branches} aBSREL selected branch`);
+  if (gene.meme_sites > 0) support.push(`${gene.meme_sites} foreground MEME episodic candidate sites`);
+  if (gene.fel_sites > 0) support.push(`${gene.fel_sites} foreground FEL pervasive candidate sites`);
+  if (gene.absrel_branches > 0) support.push(`${gene.absrel_branches} foreground aBSREL selected branch`);
   if (Number(gene.relax_p) <= 0.05) support.push(`RELAX p=${fmt(gene.relax_p)}`);
   if (Number(gene.mss_models) > 0) support.push(`${gene.mss_models} MSS-GA models evaluated`);
   const relaxText = gene.relax_k === "" ? "" : `RELAX estimates K=${fmt(gene.relax_k)}, interpreted as ${Number(gene.relax_k) > 1 ? "intensified" : Number(gene.relax_k) < 1 ? "relaxed" : "neutral"} selection for this branch set.`;
@@ -1083,8 +1386,8 @@ function interpretation(data, gene) {
 function overview(data) {
   const completed = data.analysis.filter(row => row.status === "pass").length;
   const notRun = data.analysis.filter(row => row.status === "not_run").length;
-  const memeSites = data.meme.filter(row => Number(row.p_value) <= state.pThreshold).length;
-  const felSites = data.fel.filter(row => row.direction === "diversifying" && Number(row.p_value) <= state.pThreshold).length;
+  const memeSites = data.meme.filter(passesSiteThreshold).length;
+  const felSites = data.fel.filter(row => row.direction === "diversifying" && passesSiteThreshold(row)).length;
   const selectedBranches = data.absrel.filter(row => row.status === "selected").length;
   const mssModels = data.mss.reduce((sum, row) => sum + Number(row.model_count || 0), 0);
   const highWarnings = data.warnings.filter(row => row.severity === "high").length;
@@ -1093,9 +1396,9 @@ function overview(data) {
       { label: "Runs", value: data.genes.length },
       { label: "Completed method runs", value: completed },
       { label: "Methods not run", value: notRun },
-      { label: "FEL sites", value: felSites },
-      { label: "MEME sites", value: memeSites },
-      { label: "aBSREL branches", value: selectedBranches },
+      { label: "Foreground FEL sites", value: felSites },
+      { label: "Foreground MEME sites", value: memeSites },
+      { label: "Foreground aBSREL branches", value: selectedBranches },
       { label: "MSS models", value: mssModels },
       { label: "High warnings", value: highWarnings },
     ])}
@@ -1159,8 +1462,8 @@ function genesPage(data) {
         { key: "n_sequences", label: "Sequences" },
         { key: "codons", label: "Codons" },
         { key: "fel_sites", label: "FEL" },
-        { key: "meme_sites", label: "MEME" },
-        { key: "absrel_branches", label: "aBSREL" },
+        { key: "meme_sites", label: "Foreground MEME" },
+        { key: "absrel_branches", label: "Foreground aBSREL" },
         { key: "relax_k", label: "RELAX K" },
         { key: "relax_p", label: "RELAX p" },
         { key: "mss_models", label: "MSS models" },
@@ -1173,19 +1476,20 @@ function genesPage(data) {
 function sitesPage(data) {
   const gene = data.genes.find(row => row.gene_id === state.selectedRun) ?? data.genes[0];
   const sites = data.meme
-    .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id && Number(row.p_value) <= state.pThreshold)
+    .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id && passesSiteThreshold(row))
     .map(site => {
       const quality = data.quality.find(row => `${row.segment}_${row.label_set}` === gene.gene_id && row.codon === site.codon) || {};
       const warning = Number(quality.gap_fraction || 0) > 0.1 ? "gappy" : Number(quality.entropy || 0) > 1.5 ? "high entropy" : "";
       return { ...site, gap_fraction: quality.gap_fraction ?? "", entropy: quality.entropy ?? "", non_gap_sequences: quality.non_gap_sequences ?? "", warning };
     });
   const felSites = data.fel
-    .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id && Number(row.p_value) <= state.pThreshold)
+    .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id && passesSiteThreshold(row))
     .map(site => {
       const quality = data.quality.find(row => `${row.segment}_${row.label_set}` === gene.gene_id && row.codon === site.codon) || {};
       const warning = Number(quality.gap_fraction || 0) > 0.1 ? "gappy" : Number(quality.entropy || 0) > 1.5 ? "high entropy" : "";
       return { ...site, gap_fraction: quality.gap_fraction ?? "", entropy: quality.entropy ?? "", non_gap_sequences: quality.non_gap_sequences ?? "", warning };
     });
+  const memeBranches = memeBranchSupportRows(data, gene, { topN: 100, fdrOnly: false });
   return `<section class="page grid">
     <section class="panel">
       <h2>Integrated Site-Level Browser</h2>
@@ -1202,17 +1506,18 @@ function sitesPage(data) {
         <input type="checkbox" id="domain-track-toggle" ${state.showDomainTrack ? "checked" : ""}>
         Show Domains/GARD track
       </label>
-      <h3>MEME Episodic Site Evidence</h3>
+      <h3>MEME Foreground-Branch Episodic Site Evidence</h3>
       ${exportToolbar({ svgId: `meme-lollipop-${fileSafe(gene.gene_id)}`, filename: `${gene.gene_id}_meme_lollipop` })}
       ${lollipop(data, gene, { method: "MEME", id: `meme-lollipop-${fileSafe(gene.gene_id)}` })}
-      <h3>FEL Pervasive Site Evidence</h3>
+      <h3>Foreground FEL Pervasive Site Evidence</h3>
       ${exportToolbar({ svgId: `fel-lollipop-${fileSafe(gene.gene_id)}`, filename: `${gene.gene_id}_fel_lollipop` })}
       ${lollipop(data, gene, { method: "FEL", id: `fel-lollipop-${fileSafe(gene.gene_id)}` })}
     </section>
     <section class="panel">
-      <h2>FEL Site Table</h2>
+      <h2>Foreground FEL Site Table</h2>
       ${table(felSites, [
         { key: "codon", label: "Codon" },
+        { key: "q_value", label: "BH q" },
         { key: "p_value", label: "p" },
         { key: "alpha", label: "alpha" },
         { key: "beta", label: "beta" },
@@ -1223,13 +1528,15 @@ function sitesPage(data) {
         { key: "non_gap_sequences", label: "Non-gap seqs" },
         { key: "warning", label: "Warning" },
         { key: "lrt", label: "LRT" },
+        { key: "fdr_status", label: "FDR", render: value => badge(value) },
         { key: "status", label: "Status", render: value => badge(value) },
       ], `${gene.gene_id}_fel_sites_visible`)}
     </section>
     <section class="panel">
-      <h2>MEME Site Table</h2>
+      <h2>MEME Foreground Site Table</h2>
       ${table(sites, [
         { key: "codon", label: "Codon" },
+        { key: "q_value", label: "BH q" },
         { key: "p_value", label: "p" },
         { key: "omega_plus", label: "omega+" },
         { key: "branch_fraction", label: "Branch fraction" },
@@ -1239,7 +1546,27 @@ function sitesPage(data) {
         { key: "non_gap_sequences", label: "Non-gap seqs" },
         { key: "warning", label: "Warning" },
         { key: "lrt", label: "LRT" },
+        { key: "fdr_status", label: "FDR", render: value => badge(value) },
       ], `${gene.gene_id}_meme_sites_visible`)}
+    </section>
+    <section class="panel">
+      <h2>MEME Foreground Branch EBF Table</h2>
+      <p class="muted">Rows are reconstructed from MEME foreground-branch posterior annotations for raw p <= 0.10 sites; FDR status marks which sites survive BH correction.</p>
+      ${exportToolbar({ svgId: `meme-branch-support-${fileSafe(gene.gene_id)}`, filename: `${gene.gene_id}_meme_branch_support` })}
+      ${memeBranchSupportPlot(data, gene)}
+      ${table(memeBranches, [
+        { key: "codon", label: "Codon" },
+        { key: "branch", label: "Branch" },
+        { key: "reconstructed_ebf", label: "Reconstructed EBF" },
+        { key: "posterior_positive_class", label: "Posterior positive class" },
+        { key: "q_value", label: "BH q" },
+        { key: "p_value", label: "p" },
+        { key: "fdr_status", label: "FDR", render: value => badge(value) },
+        { key: "ebf_ge_100", label: "EBF >= 100" },
+        { key: "reconstructed_codon", label: "Reconstructed codon" },
+        { key: "has_reconstructed_substitution", label: "Has substitution" },
+        { key: "branch_length", label: "Branch length" },
+      ], `${gene.gene_id}_meme_branch_ebf_visible`)}
     </section>
   </section>`;
 }
@@ -1248,7 +1575,7 @@ function branchesPage(data) {
   const gene = data.genes.find(row => row.gene_id === state.selectedRun) ?? data.genes[0];
   return `<section class="page grid">
     <section class="panel">
-      <h2>Linked RELAX/aBSREL Tree</h2>
+      <h2>Linked RELAX/Foreground aBSREL Tree</h2>
       ${runPicker(data, gene)}
       ${exportToolbar({ svgId: `tree-${fileSafe(gene.gene_id)}`, filename: `${gene.gene_id}_relax_absrel_tree` })}
       ${treePanel(data, gene)}
@@ -1266,7 +1593,7 @@ function branchesPage(data) {
       </section>
     </div>
     <section class="panel">
-      <h2>aBSREL Branch Evidence Plot</h2>
+      <h2>Foreground aBSREL Branch Evidence Plot</h2>
       <label class="checkbox-control">
         <input type="checkbox" id="absrel-label-toggle" ${state.absrelShowLabels ? "checked" : ""}>
         Show branch labels
@@ -1275,7 +1602,7 @@ function branchesPage(data) {
       ${absrelEvidencePlot(data)}
     </section>
     <section class="panel">
-      <h2>aBSREL Branch-Level Selection</h2>
+      <h2>Foreground aBSREL Branch-Level Selection</h2>
       ${table(data.absrel, [
         { key: "segment", label: "Segment" },
         { key: "label_set", label: "Tree" },
@@ -1304,7 +1631,9 @@ function branchesPage(data) {
         { key: "files", label: "Files" },
         { key: "model_count", label: "Models" },
         { key: "best_ic", label: "Best IC" },
-        { key: "classes", label: "Classes" },
+        { key: "median_active_parameters", label: "Median active params" },
+        { key: "top_parameter", label: "Top parameter" },
+        { key: "top_parameter_frequency", label: "Top frequency" },
         { key: "interpretation", label: "Interpretation" },
       ], "mss_results_visible")}
     </section>
@@ -1386,11 +1715,11 @@ function browserPage(data) {
       <h2>Integrated Gene Browser</h2>
       ${runPicker(data, gene)}
       ${cards([
-        { label: "MEME sites", value: gene.meme_sites },
-        { label: "FEL sites", value: gene.fel_sites },
+        { label: "Foreground MEME sites", value: gene.meme_sites },
+        { label: "Foreground FEL sites", value: gene.fel_sites },
         { label: "RELAX K", value: gene.relax_k || "NA" },
         { label: "MSS models", value: gene.mss_models || "NA" },
-        { label: "aBSREL branches", value: gene.absrel_branches },
+        { label: "Foreground aBSREL branches", value: gene.absrel_branches },
         { label: "Test branches", value: gene.test_branches || "NA" },
       ])}
       ${exportToolbar({ svgId: `meme-lollipop-${fileSafe(gene.gene_id)}`, filename: `${gene.gene_id}_integrated_lollipop` })}
@@ -1399,12 +1728,16 @@ function browserPage(data) {
       ${treePanel(data, gene)}
       ${exportToolbar({ svgId: `absrel-evidence-${fileSafe(gene.gene_id)}`, filename: `${gene.gene_id}_absrel_evidence` })}
       ${absrelEvidencePlot(data, gene, `absrel-evidence-${fileSafe(gene.gene_id)}`)}
+      ${exportToolbar({ svgId: `mss-frontier-${fileSafe(gene.gene_id)}`, filename: `${gene.gene_id}_mss_frontier` })}
+      ${mssModelFrontierPlot(data, gene)}
+      ${exportToolbar({ svgId: `mss-parameters-${fileSafe(gene.gene_id)}`, filename: `${gene.gene_id}_mss_parameters` })}
+      ${mssParameterPlot(data, gene)}
       <h3>Evidence Summary</h3>
       ${table([gene], [
         { key: "gene_id", label: "Run" },
         { key: "fel_sites", label: "FEL" },
-        { key: "meme_sites", label: "MEME" },
-        { key: "absrel_branches", label: "aBSREL" },
+        { key: "meme_sites", label: "Foreground MEME" },
+        { key: "absrel_branches", label: "Foreground aBSREL" },
         { key: "relax_k", label: "RELAX K" },
         { key: "relax_p", label: "RELAX p" },
         { key: "mss_models", label: "MSS models" },
@@ -1463,7 +1796,7 @@ function exportPage(data) {
         ${Object.values(tableFiles).map(file => `<a class="tab" href="${TABLE_ROOT}/${file}" download>${file}</a>`).join("")}
       </div>
       <h3>Draft Results Text</h3>
-      <p class="interpretation">Across the current hantavirus analyses, FEL identified ${data.fel.filter(row => row.direction === "diversifying").length} candidate pervasive diversifying sites at p <= 0.1, MEME identified ${data.meme.length} candidate episodic sites at p <= 0.1, aBSREL identified ${data.absrel.filter(row => row.status === "selected").length} selected branches after correction, RELAX found ${data.relax.filter(row => row.significant === true).length} significant branch-set shifts at p <= 0.05, and MSS-GA evaluated ${data.mss.reduce((sum, row) => sum + Number(row.model_count || 0), 0)} synonymous-rate class models. Results should be interpreted with the duplicate-sequence and RELAX convergence warnings shown in the warning panel.</p>
+      <p class="interpretation">Across the current hantavirus analyses, foreground-branch FEL identified ${data.fel.filter(row => row.direction === "diversifying" && siteQValue(row) <= 0.1).length} candidate pervasive diversifying sites at BH FDR q <= 0.1, foreground-branch MEME identified ${data.meme.filter(row => siteQValue(row) <= 0.1).length} candidate episodic sites at BH FDR q <= 0.1, foreground aBSREL identified ${data.absrel.filter(row => row.status === "selected").length} selected branches after correction, RELAX found ${data.relax.filter(row => row.significant === true).length} significant branch-set shifts at p <= 0.05, and MSS-GA evaluated ${data.mss.reduce((sum, row) => sum + Number(row.model_count || 0), 0)} synonymous-rate class models. Results should be interpreted with the duplicate-sequence and RELAX convergence warnings shown in the warning panel.</p>
     </section>
   </section>`;
 }
@@ -1479,6 +1812,7 @@ function render() {
     genes: genesPage,
     sites: sitesPage,
     branches: branchesPage,
+    mss: mssPage,
     "input-trees": inputTreesPage,
     browser: browserPage,
     warnings: warningsPage,

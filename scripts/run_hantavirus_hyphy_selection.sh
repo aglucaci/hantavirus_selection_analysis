@@ -18,8 +18,13 @@ SAMPLE_SHEET="${SAMPLE_SHEET:-sample_sheet.tsv}"
 FORCE="${FORCE:-0}"
 VERBOSE="${VERBOSE:-1}"
 ONLY="${ONLY:-all}"
+RUN_MSS="${RUN_MSS:-0}"
 RELAX_STARTING_POINTS="${RELAX_STARTING_POINTS:-1}"
 MSS_CLASSES="${MSS_CLASSES:-}"
+SELECTION_BRANCHES="${SELECTION_BRANCHES:-Foreground}"
+FEL_BRANCHES="${FEL_BRANCHES:-$SELECTION_BRANCHES}"
+MEME_BRANCHES="${MEME_BRANCHES:-$SELECTION_BRANCHES}"
+ABSREL_BRANCHES="${ABSREL_BRANCHES:-$SELECTION_BRANCHES}"
 
 print_command() {
   printf '[cmd]'
@@ -85,7 +90,7 @@ run_meme() {
     "$HYPHY_BIN" "$HYPHY_BF_DIR/MEME.bf" \
       --alignment "$INPUT_DIR/${segment}.hyphy_ready.fasta" \
       --tree "$tree" \
-      --branches All \
+      --branches "$MEME_BRANCHES" \
       --output "$output"
 }
 
@@ -99,7 +104,7 @@ run_fel() {
     "$HYPHY_BIN" "$HYPHY_BF_DIR/FEL.bf" \
       --alignment "$INPUT_DIR/${segment}.hyphy_ready.fasta" \
       --tree "$tree" \
-      --branches All \
+      --branches "$FEL_BRANCHES" \
       --output "$output"
 }
 
@@ -113,7 +118,7 @@ run_absrel() {
     "$HYPHY_BIN" "$HYPHY_BF_DIR/aBSREL.bf" \
       --alignment "$INPUT_DIR/${segment}.hyphy_ready.fasta" \
       --tree "$tree" \
-      --branches All \
+      --branches "$ABSREL_BRANCHES" \
       --output "$output"
 }
 
@@ -271,7 +276,7 @@ while IFS=$'\t' read -r segment group alignment tree source_tag extra || [[ -n "
   if run_requested MEME; then run_meme "$segment" "$group" "$ready_tree"; fi
   if run_requested aBSREL; then run_absrel "$segment" "$group" "$ready_tree"; fi
   if run_requested RELAX; then run_relax "$segment" "$group" "$ready_tree"; fi
-  if run_requested MSS; then run_mss "$segment" "$group" "$ready_tree"; fi
+  if run_requested MSS && [[ "$RUN_MSS" == "1" || "$ONLY" == "MSS" ]]; then run_mss "$segment" "$group" "$ready_tree"; fi
 done < "$SAMPLE_SHEET"
 
 echo "[complete] HyPhy selection batch finished."

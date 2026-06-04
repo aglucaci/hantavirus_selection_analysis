@@ -73,6 +73,60 @@ def safe_neg_log10(value) -> float | None:
     return -math.log10(number)
 
 
+def bh_q_values(p_values: list[float | None]) -> list[float | None]:
+    indexed = [(idx, value) for idx, value in enumerate(p_values) if value is not None]
+    q_values: list[float | None] = [None] * len(p_values)
+    if not indexed:
+        return q_values
+    ranked = sorted(indexed, key=lambda item: item[1], reverse=True)
+    m = len(indexed)
+    running = 1.0
+    for reverse_rank, (idx, p_value) in enumerate(ranked, start=1):
+        rank = m - reverse_rank + 1
+        running = min(running, p_value * m / rank)
+        q_values[idx] = min(running, 1.0)
+    return q_values
+
+
+def fdr_status(q_value: float | None, p_value: float | None) -> str:
+    if q_value is not None and q_value <= 0.05:
+        return "strict"
+    if q_value is not None and q_value <= 0.1:
+        return "candidate"
+    if p_value is not None and p_value <= 0.1:
+        return "exploratory"
+    return "not_selected"
+
+
+def bayes_factor(prior: float | None, posterior: float | None) -> float | None:
+    if prior is None or posterior is None:
+        return None
+    if prior >= 1:
+        return 1.0 if posterior >= 1 else 0.0
+    if prior <= 0:
+        return 1.0
+    if posterior >= 1:
+        return math.inf
+    if posterior <= 0:
+        return 0.0
+    return posterior * (1 - prior) / (1 - posterior) / prior
+
+
+def parse_binary_model_key(value: str) -> list[int]:
+    numbers = re.findall(r"[-+]?\d+", value)
+    return [int(number) for number in numbers]
+
+
+def first_model_metrics(value) -> list[float]:
+    if isinstance(value, list) and value:
+        first = value[0]
+        if isinstance(first, list):
+            return [number for number in first if isinstance(number, (int, float))]
+        if all(isinstance(item, (int, float)) for item in value):
+            return value
+    return []
+
+
 def read_fasta(path: Path) -> dict[str, str]:
     records: dict[str, list[str]] = {}
     name = ""
@@ -228,7 +282,7 @@ def qc_rows() -> tuple[list[dict], list[dict]]:
     return summaries, dropped
 
 
-def parse_meme(path: Path, segment: str, label_set: str) -> tuple[dict, list[dict]]:
+def parse_meme(path: Path, segment: str, label_set: str) -> tuple[dict, list[dict], list[dict]]:
     data = read_json(path)
     headers = data["MLE"]["headers"]
     rows = data["MLE"]["content"]["0"]
@@ -237,24 +291,65 @@ def parse_meme(path: Path, segment: str, label_set: str) -> tuple[dict, list[dic
     prop_idx = header_index(headers, "p<sup>+</sup>")
     branch_idx = header_index(headers, "# branches under selection")
     lrt_idx = header_index(headers, "LRT")
+    branch_attributes = data.get("branch attributes", {}).get("0", {})
+    substitutions = data.get("substitutions", {}).get("0", {})
 
+    p_values = [as_float(row[p_idx]) if p_idx is not None else None for row in rows]
+    q_values = bh_q_values(p_values)
     sites = []
-    for site_number, row in enumerate(rows, start=1):
-        p_value = as_float(row[p_idx]) if p_idx is not None else None
+    branch_rows = []
+    for site_number, (row, p_value, q_value) in enumerate(zip(rows, p_values, q_values), start=1):
         if p_value is not None and p_value <= 0.1:
+            site_fdr_status = fdr_status(q_value, p_value)
             sites.append(
                 {
                     "segment": segment,
                     "label_set": label_set,
                     "codon": site_number,
                     "p_value": p_value,
+                    "q_value": q_value,
                     "neg_log10_p": safe_neg_log10(p_value),
+                    "neg_log10_q": safe_neg_log10(q_value),
                     "omega_plus": row[beta_plus_idx] if beta_plus_idx is not None else "",
                     "branch_fraction": row[prop_idx] if prop_idx is not None else "",
                     "branches_under_selection": row[branch_idx] if branch_idx is not None else "",
                     "lrt": row[lrt_idx] if lrt_idx is not None else "",
+                    "fdr_status": site_fdr_status,
                 }
             )
+            prior = as_float(row[prop_idx]) if prop_idx is not None else None
+            site_substitutions = substitutions.get(str(site_number - 1)) or {}
+            for branch, attrs in branch_attributes.items():
+                posterior_by_class = attrs.get("Posterior prob omega class by site", [])
+                if not posterior_by_class:
+                    continue
+                positive_posteriors = posterior_by_class[-1]
+                posterior = as_float(positive_posteriors[site_number - 1]) if site_number - 1 < len(positive_posteriors) else None
+                if posterior is None:
+                    continue
+                codon_state = site_substitutions.get(branch, "")
+                has_substitution = bool(codon_state and codon_state != "---")
+                ebf = bayes_factor(prior, posterior)
+                if posterior <= 0 and not has_substitution:
+                    continue
+                branch_rows.append(
+                    {
+                        "segment": segment,
+                        "label_set": label_set,
+                        "codon": site_number,
+                        "p_value": p_value,
+                        "q_value": q_value,
+                        "fdr_status": site_fdr_status,
+                        "branch": branch,
+                        "posterior_positive_class": posterior,
+                        "reconstructed_ebf": ebf,
+                        "ebf_ge_100": bool(ebf is not None and ebf >= 100),
+                        "branch_length": attrs.get("Global MG94xREV", ""),
+                        "reconstructed_codon": codon_state,
+                        "has_reconstructed_substitution": has_substitution,
+                    }
+                )
+    selected_count = sum(1 for value in q_values if value is not None and value <= 0.1)
     summary = {
         "segment": segment,
         "label_set": label_set,
@@ -263,13 +358,13 @@ def parse_meme(path: Path, segment: str, label_set: str) -> tuple[dict, list[dic
         "n_sequences": data.get("input", {}).get("number of sequences", ""),
         "codons": data.get("input", {}).get("number of sites", ""),
         "tested": len(rows),
-        "significant_count": len(sites),
+        "significant_count": selected_count,
         "p_value": "",
         "neg_log10_p": "",
         "k": "",
-        "interpretation": "episodic sites at p <= 0.1",
+        "interpretation": "foreground-branch episodic sites at BH FDR q <= 0.1",
     }
-    return summary, sites
+    return summary, sites, branch_rows
 
 
 def parse_fel(path: Path, segment: str, label_set: str) -> tuple[dict, list[dict]]:
@@ -281,10 +376,11 @@ def parse_fel(path: Path, segment: str, label_set: str) -> tuple[dict, list[dict
     p_idx = header_index_any(headers, "p-value", "p value", "p")
     lrt_idx = header_index_any(headers, "LRT", "likelihood ratio test")
 
+    p_values = [as_float(row[p_idx]) if p_idx is not None else None for row in rows]
+    q_values = bh_q_values(p_values)
     sites = []
     diversifying_count = 0
-    for site_number, row in enumerate(rows, start=1):
-        p_value = as_float(row[p_idx]) if p_idx is not None else None
+    for site_number, (row, p_value, q_value) in enumerate(zip(rows, p_values, q_values), start=1):
         if p_value is not None and p_value <= 0.1:
             alpha = as_float(row[alpha_idx]) if alpha_idx is not None else None
             beta = as_float(row[beta_idx]) if beta_idx is not None else None
@@ -293,7 +389,8 @@ def parse_fel(path: Path, segment: str, label_set: str) -> tuple[dict, list[dict
                 direction = "unknown"
             elif beta > alpha:
                 direction = "diversifying"
-                diversifying_count += 1
+                if q_value is not None and q_value <= 0.1:
+                    diversifying_count += 1
             elif beta < alpha:
                 direction = "purifying"
             else:
@@ -304,13 +401,16 @@ def parse_fel(path: Path, segment: str, label_set: str) -> tuple[dict, list[dict
                     "label_set": label_set,
                     "codon": site_number,
                     "p_value": p_value,
+                    "q_value": q_value,
                     "neg_log10_p": safe_neg_log10(p_value),
+                    "neg_log10_q": safe_neg_log10(q_value),
                     "alpha": row[alpha_idx] if alpha_idx is not None else "",
                     "beta": row[beta_idx] if beta_idx is not None else "",
                     "omega": omega,
                     "lrt": row[lrt_idx] if lrt_idx is not None else "",
                     "direction": direction,
-                    "status": "selected" if p_value <= 0.05 else "borderline",
+                    "status": "selected" if q_value is not None and q_value <= 0.1 else "exploratory",
+                    "fdr_status": fdr_status(q_value, p_value),
                 }
             )
     summary = {
@@ -325,7 +425,7 @@ def parse_fel(path: Path, segment: str, label_set: str) -> tuple[dict, list[dict
         "p_value": "",
         "neg_log10_p": "",
         "k": "",
-        "interpretation": "pervasive diversifying sites at p <= 0.1",
+        "interpretation": "foreground-branch pervasive diversifying sites at BH FDR q <= 0.1",
     }
     return summary, sites
 
@@ -368,7 +468,7 @@ def parse_absrel(path: Path, segment: str, label_set: str) -> tuple[dict, list[d
         "p_value": "",
         "neg_log10_p": "",
         "k": "",
-        "interpretation": "selected branches after aBSREL correction",
+        "interpretation": "foreground branches selected after aBSREL correction",
     }
     return summary, branches
 
@@ -416,10 +516,15 @@ def parse_relax(path: Path, segment: str, label_set: str) -> tuple[dict, dict]:
     return summary, row
 
 
-def parse_mss(path: Path, segment: str, label_set: str) -> tuple[dict, dict]:
+def parse_mss(path: Path, segment: str, label_set: str) -> tuple[dict, dict, list[dict], list[dict]]:
     data = read_json(path)
     models = data.get("masterList", {})
     files = data.get("files", [])
+    mapping = data.get("mapping", [])
+    parameter_names = [
+        str(item[0]).replace("mss_0.model_object.", "") if isinstance(item, list) and item else str(item)
+        for item in mapping
+    ]
 
     def first_number(value) -> float | None:
         if isinstance(value, (int, float)):
@@ -438,12 +543,60 @@ def parse_mss(path: Path, segment: str, label_set: str) -> tuple[dict, dict]:
 
     scores = [number for number in (first_number(value) for value in models.values()) if number is not None]
     best_ic = min(scores) if scores else None
+    model_rows = []
+    parameter_counts = Counter()
+    sorted_models = []
+    if isinstance(models, dict):
+        for model_key, model_value in models.items():
+            assignments = parse_binary_model_key(model_key)
+            metrics = first_model_metrics(model_value)
+            ic = as_float(metrics[0]) if len(metrics) > 0 else None
+            log_likelihood = as_float(metrics[1]) if len(metrics) > 1 else None
+            sorted_models.append((ic if ic is not None else math.inf, model_key, assignments, metrics))
+            for index, assignment in enumerate(assignments):
+                if assignment and index < len(parameter_names):
+                    parameter_counts[parameter_names[index]] += 1
+    sorted_models.sort(key=lambda item: item[0])
+    for rank, (ic, _model_key, assignments, metrics) in enumerate(sorted_models, start=1):
+        active_parameters = sum(1 for assignment in assignments if assignment)
+        class_rates = [number for number in metrics[2:-1] if isinstance(number, (int, float))]
+        model_rows.append(
+            {
+                "segment": segment,
+                "label_set": label_set,
+                "rank": rank,
+                "ic": "" if math.isinf(ic) else ic,
+                "delta_ic": "" if best_ic is None or math.isinf(ic) else ic - best_ic,
+                "log_likelihood": metrics[1] if len(metrics) > 1 else "",
+                "active_parameters": active_parameters,
+                "inactive_parameters": max(0, len(assignments) - active_parameters),
+                "class_count": len(class_rates),
+                "class_rates": ",".join(str(rate) for rate in class_rates),
+            }
+        )
+    parameter_rows = [
+        {
+            "segment": segment,
+            "label_set": label_set,
+            "parameter": parameter,
+            "active_models": count,
+            "model_count": len(models) if isinstance(models, dict) else "",
+            "active_fraction": count / len(models) if isinstance(models, dict) and models else "",
+        }
+        for parameter, count in sorted(parameter_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    active_counts = [row["active_parameters"] for row in model_rows]
     row = {
         "segment": segment,
         "label_set": label_set,
         "files": len(files) if isinstance(files, list) else "",
         "model_count": len(models) if isinstance(models, dict) else "",
         "best_ic": best_ic,
+        "min_active_parameters": min(active_counts) if active_counts else "",
+        "median_active_parameters": sorted(active_counts)[len(active_counts) // 2] if active_counts else "",
+        "max_active_parameters": max(active_counts) if active_counts else "",
+        "top_parameter": parameter_rows[0]["parameter"] if parameter_rows else "",
+        "top_parameter_frequency": parameter_rows[0]["active_fraction"] if parameter_rows else "",
         "classes": "",
         "interpretation": "MSS-GA synonymous-rate class search",
     }
@@ -461,7 +614,7 @@ def parse_mss(path: Path, segment: str, label_set: str) -> tuple[dict, dict]:
         "k": "",
         "interpretation": row["interpretation"],
     }
-    return summary, row
+    return summary, row, model_rows, parameter_rows
 
 
 def build_warnings(
@@ -543,9 +696,12 @@ def main() -> None:
     analysis_summary = []
     fel_sites = []
     meme_sites = []
+    meme_branch_ebf = []
     absrel_branches = []
     relax_results = []
     mss_results = []
+    mss_models = []
+    mss_parameter_frequency = []
 
     for path in sorted(RESULTS.glob("*.json")):
         if path.stat().st_size == 0:
@@ -560,9 +716,10 @@ def main() -> None:
                 analysis_summary.append(summary)
                 fel_sites.extend(rows)
             elif method == "MEME":
-                summary, rows = parse_meme(path, segment, label_set)
+                summary, rows, branch_rows = parse_meme(path, segment, label_set)
                 analysis_summary.append(summary)
                 meme_sites.extend(rows)
+                meme_branch_ebf.extend(branch_rows)
             elif method == "aBSREL":
                 summary, rows = parse_absrel(path, segment, label_set)
                 analysis_summary.append(summary)
@@ -572,9 +729,11 @@ def main() -> None:
                 analysis_summary.append(summary)
                 relax_results.append(row)
             elif method == "MSS":
-                summary, row = parse_mss(path, segment, label_set)
+                summary, row, model_rows, parameter_rows = parse_mss(path, segment, label_set)
                 analysis_summary.append(summary)
                 mss_results.append(row)
+                mss_models.extend(model_rows)
+                mss_parameter_frequency.extend(parameter_rows)
         except json.JSONDecodeError:
             analysis_summary.append(
                 {
@@ -637,12 +796,40 @@ def main() -> None:
     write_tsv(
         OUT / "fel_sites.tsv",
         fel_sites,
-        ["segment", "label_set", "codon", "p_value", "neg_log10_p", "alpha", "beta", "omega", "lrt", "direction", "status"],
+        ["segment", "label_set", "codon", "p_value", "q_value", "neg_log10_p", "neg_log10_q", "alpha", "beta", "omega", "lrt", "direction", "status", "fdr_status"],
     )
     write_tsv(
         OUT / "meme_sites.tsv",
         meme_sites,
-        ["segment", "label_set", "codon", "p_value", "neg_log10_p", "omega_plus", "branch_fraction", "branches_under_selection", "lrt"],
+        ["segment", "label_set", "codon", "p_value", "q_value", "neg_log10_p", "neg_log10_q", "omega_plus", "branch_fraction", "branches_under_selection", "lrt", "fdr_status"],
+    )
+    write_tsv(
+        OUT / "meme_branch_ebf.tsv",
+        sorted(
+            meme_branch_ebf,
+            key=lambda row: (
+                row["segment"],
+                row["label_set"],
+                row["codon"],
+                -(row["reconstructed_ebf"] if isinstance(row["reconstructed_ebf"], (int, float)) and math.isfinite(row["reconstructed_ebf"]) else 1e308),
+                row["branch"],
+            ),
+        ),
+        [
+            "segment",
+            "label_set",
+            "codon",
+            "p_value",
+            "q_value",
+            "fdr_status",
+            "branch",
+            "posterior_positive_class",
+            "reconstructed_ebf",
+            "ebf_ge_100",
+            "branch_length",
+            "reconstructed_codon",
+            "has_reconstructed_substitution",
+        ],
     )
     write_tsv(
         OUT / "absrel_branches.tsv",
@@ -657,7 +844,30 @@ def main() -> None:
     write_tsv(
         OUT / "mss_results.tsv",
         mss_results,
-        ["segment", "label_set", "files", "model_count", "best_ic", "classes", "interpretation"],
+        [
+            "segment",
+            "label_set",
+            "files",
+            "model_count",
+            "best_ic",
+            "min_active_parameters",
+            "median_active_parameters",
+            "max_active_parameters",
+            "top_parameter",
+            "top_parameter_frequency",
+            "classes",
+            "interpretation",
+        ],
+    )
+    write_tsv(
+        OUT / "mss_models.tsv",
+        mss_models,
+        ["segment", "label_set", "rank", "ic", "delta_ic", "log_likelihood", "active_parameters", "inactive_parameters", "class_count", "class_rates"],
+    )
+    write_tsv(
+        OUT / "mss_parameter_frequency.tsv",
+        mss_parameter_frequency,
+        ["segment", "label_set", "parameter", "active_models", "model_count", "active_fraction"],
     )
     write_tsv(
         OUT / "warnings.tsv",
