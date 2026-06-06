@@ -88,6 +88,11 @@ FORCE=1 VERBOSE=1 bash scripts/run_hantavirus_hyphy_selection.sh
 The default run includes FEL, MEME, aBSREL, and RELAX. It does not run MSS-GA
 unless you explicitly opt in with `RUN_MSS=1` or `ONLY=MSS`.
 
+After HyPhy finishes, the workflow also extracts sparse ancestral/internal-node
+state maps from FEL and MEME JSON files into `ancestral_sequences/`. Disable
+this with `EXTRACT_ANCESTRAL=0`, or include all methods with substitution maps
+using `ANCESTRAL_METHODS="FEL MEME aBSREL RELAX"`.
+
 To rerun only RELAX with more random starting points:
 
 ```bash
@@ -174,7 +179,16 @@ results/logs/
 
 ## JavaScript Dashboard
 
-Build the dashboard summary tables:
+### Run Locally
+
+From the repository root:
+
+```bash
+cd /Users/agl4001/Documents/hantavirus_selection_analysis
+conda activate hantavirus-snake
+```
+
+Build the dashboard summary tables for the current ANDV results:
 
 ```bash
 bash scripts/build_dashboard.sh
@@ -193,10 +207,28 @@ To build tables for a different results folder:
 HYPHY_RESULTS_DIR=results/hantavirus_hyphy bash scripts/build_dashboard.sh
 ```
 
-To build the dashboard summary tables and start the browser dashboard:
+Start the local JavaScript dashboard server:
+
+```bash
+python -m http.server 8502 --bind 127.0.0.1
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8502/dashboard-js/
+```
+
+Shortcut: build the tables and start the local server in one command:
 
 ```bash
 bash scripts/run_js_dashboard.sh
+```
+
+For a different results folder with the shortcut:
+
+```bash
+HYPHY_RESULTS_DIR=results/hantavirus_hyphy bash scripts/run_js_dashboard.sh
 ```
 
 Then open:
@@ -268,6 +300,46 @@ Dashboard-ready TSV tables are written to:
 results/ANDV_trees_aln-hyphy/dashboard_tables/
 ```
 
+## Ancestral State Exports
+
+HyPhy JSON files store reconstructed/imputed node states in the `substitutions`
+object. In the current outputs this is present for FEL, MEME, aBSREL, and
+RELAX, although FEL and MEME are the most useful default sources for site-level
+interpretation. These are sparse state maps, not complete ancestral alignment
+files; missing node/site states are written as `NNN` in codon FASTA and `X` in
+amino-acid FASTA.
+
+Extract FEL and MEME ancestral/internal-node states:
+
+```bash
+python scripts/extract_hyphy_ancestral_states.py --results-dir results/ANDV_trees_aln-hyphy --methods FEL MEME
+```
+
+The main HyPhy runner performs that extraction automatically by default after
+analyses finish:
+
+```bash
+SAMPLE_SHEET=andv_trees_sample_sheet.tsv FORCE=1 VERBOSE=1 bash scripts/run_hantavirus_hyphy_selection.sh
+```
+
+To skip automatic ancestral-state extraction:
+
+```bash
+EXTRACT_ANCESTRAL=0 SAMPLE_SHEET=andv_trees_sample_sheet.tsv FORCE=1 VERBOSE=1 bash scripts/run_hantavirus_hyphy_selection.sh
+```
+
+Extract all current methods with substitution maps:
+
+```bash
+python scripts/extract_hyphy_ancestral_states.py --results-dir results/ANDV_trees_aln-hyphy --methods FEL MEME aBSREL RELAX
+```
+
+Outputs are written to:
+
+```text
+results/ANDV_trees_aln-hyphy/ancestral_sequences/
+```
+
 ## Active Scripts
 
 Only these scripts are part of the current workflow:
@@ -277,6 +349,7 @@ scripts/filter_hyphy_codon_inputs.py
 scripts/run_hantavirus_hyphy_selection.sh
 scripts/build_hyphy_dashboard_tables.py
 scripts/build_dashboard.sh
+scripts/extract_hyphy_ancestral_states.py
 scripts/run_js_dashboard.sh
 scripts/run_hyphy_dashboard.sh
 ```

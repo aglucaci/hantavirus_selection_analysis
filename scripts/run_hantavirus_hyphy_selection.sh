@@ -25,6 +25,9 @@ SELECTION_BRANCHES="${SELECTION_BRANCHES:-Foreground}"
 FEL_BRANCHES="${FEL_BRANCHES:-$SELECTION_BRANCHES}"
 MEME_BRANCHES="${MEME_BRANCHES:-$SELECTION_BRANCHES}"
 ABSREL_BRANCHES="${ABSREL_BRANCHES:-$SELECTION_BRANCHES}"
+EXTRACT_ANCESTRAL="${EXTRACT_ANCESTRAL:-1}"
+ANCESTRAL_METHODS="${ANCESTRAL_METHODS:-FEL MEME}"
+PROCESSED_OUTDIRS=""
 
 print_command() {
   printf '[cmd]'
@@ -170,6 +173,33 @@ run_requested() {
   [[ "$ONLY" == "all" || "$ONLY" == "$method" ]]
 }
 
+record_output_dir() {
+  local outdir="$1"
+  case $'\n'"$PROCESSED_OUTDIRS"$'\n' in
+    *$'\n'"$outdir"$'\n'*) ;;
+    *) PROCESSED_OUTDIRS="${PROCESSED_OUTDIRS}"$'\n'"$outdir" ;;
+  esac
+}
+
+extract_ancestral_states() {
+  local outdir="$1"
+  local output="$outdir/ancestral_sequences/ancestral_extraction_summary.tsv"
+  local methods=()
+
+  # shellcheck disable=SC2206
+  methods=($ANCESTRAL_METHODS)
+
+  if [[ "${#methods[@]}" -eq 0 ]]; then
+    echo "[skip] ancestral state export; ANCESTRAL_METHODS is empty"
+    return
+  fi
+
+  run_cmd "extract_ancestral_states_$(basename "$outdir")" "$output" \
+    python scripts/extract_hyphy_ancestral_states.py \
+      --results-dir "$outdir" \
+      --methods "${methods[@]}"
+}
+
 configure_output_dirs() {
   local source_tag="$1"
 
@@ -267,6 +297,7 @@ while IFS=$'\t' read -r segment group alignment tree source_tag extra || [[ -n "
   fi
 
   configure_output_dirs "$source_tag"
+  record_output_dir "$OUTDIR"
   echo "[results] $OUTDIR"
 
   prepare_inputs "$segment" "$group" "$alignment" "$tree"
@@ -278,5 +309,15 @@ while IFS=$'\t' read -r segment group alignment tree source_tag extra || [[ -n "
   if run_requested RELAX; then run_relax "$segment" "$group" "$ready_tree"; fi
   if run_requested MSS && [[ "$RUN_MSS" == "1" || "$ONLY" == "MSS" ]]; then run_mss "$segment" "$group" "$ready_tree"; fi
 done < "$SAMPLE_SHEET"
+
+if [[ "$EXTRACT_ANCESTRAL" == "1" ]]; then
+  while IFS= read -r processed_outdir; do
+    if [[ -n "$processed_outdir" ]]; then
+      extract_ancestral_states "$processed_outdir"
+    fi
+  done <<< "$PROCESSED_OUTDIRS"
+else
+  echo "[skip] ancestral state export; EXTRACT_ANCESTRAL=$EXTRACT_ANCESTRAL"
+fi
 
 echo "[complete] HyPhy selection batch finished."
