@@ -13,6 +13,7 @@ const state = {
   showTestedCodons: true,
   showAlignmentQuality: true,
   showDomainTrack: true,
+  showRelaxNonSignificant: false,
   treeViewBoxes: {},
   tableSorts: {},
 };
@@ -34,6 +35,38 @@ const tableFiles = {
 };
 
 const tableExports = new Map();
+
+const CODON_TO_AA = {
+  TTT: "Phe", TTC: "Phe", TTA: "Leu", TTG: "Leu",
+  TCT: "Ser", TCC: "Ser", TCA: "Ser", TCG: "Ser",
+  TAT: "Tyr", TAC: "Tyr", TAA: "Stop", TAG: "Stop",
+  TGT: "Cys", TGC: "Cys", TGA: "Stop", TGG: "Trp",
+  CTT: "Leu", CTC: "Leu", CTA: "Leu", CTG: "Leu",
+  CCT: "Pro", CCC: "Pro", CCA: "Pro", CCG: "Pro",
+  CAT: "His", CAC: "His", CAA: "Gln", CAG: "Gln",
+  CGT: "Arg", CGC: "Arg", CGA: "Arg", CGG: "Arg",
+  ATT: "Ile", ATC: "Ile", ATA: "Ile", ATG: "Met",
+  ACT: "Thr", ACC: "Thr", ACA: "Thr", ACG: "Thr",
+  AAT: "Asn", AAC: "Asn", AAA: "Lys", AAG: "Lys",
+  AGT: "Ser", AGC: "Ser", AGA: "Arg", AGG: "Arg",
+  GTT: "Val", GTC: "Val", GTA: "Val", GTG: "Val",
+  GCT: "Ala", GCC: "Ala", GCA: "Ala", GCG: "Ala",
+  GAT: "Asp", GAC: "Asp", GAA: "Glu", GAG: "Glu",
+  GGT: "Gly", GGC: "Gly", GGA: "Gly", GGG: "Gly",
+};
+
+const AA_COLORS = {
+  Ala: "#2d6cdf",
+  Arg: "#7c3aed",
+  Cys: "#c97924",
+  Gly: "#138a8a",
+  Ile: "#2f8f5b",
+  Leu: "#64748b",
+  Pro: "#b45309",
+  Ser: "#c84630",
+  Thr: "#0f766e",
+  Val: "#5b7cfa",
+};
 
 const app = document.querySelector("#app");
 const threshold = document.querySelector("#p-threshold");
@@ -161,6 +194,7 @@ function buildGeneRows(data) {
         busted_q: "",
         absrel_branches: 0,
         relax_k: "",
+        relax_lrt: "",
         relax_p: "",
         relax_q: "",
         mss_models: "",
@@ -176,6 +210,7 @@ function buildGeneRows(data) {
     if (row.method === "aBSREL") gene.absrel_branches = Number(row.significant_count || 0);
     if (row.method === "RELAX") {
       gene.relax_k = row.k;
+      gene.relax_lrt = row.lrt;
       gene.relax_p = row.p_value;
       gene.relax_q = row.q_value;
     }
@@ -188,6 +223,7 @@ function buildGeneRows(data) {
     if (gene) {
       gene.test_branches = row.test_branches;
       gene.background_branches = row.reference_branches;
+      gene.relax_lrt = row.lrt;
     }
   }
   for (const row of data.qc) {
@@ -229,6 +265,36 @@ function badge(value) {
   const cls = String(value).toLowerCase().replace(/\s+/g, "-");
   const severity = cls === "high" ? "high-warning" : cls;
   return `<span class="badge ${severity}">${value}</span>`;
+}
+
+function lrtCell(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return escapeHtml(fmt(value));
+  const cls = number < 0 ? "negative-lrt" : "positive-lrt";
+  const label = number < 0 ? `${fmt(number, 4)} (negative)` : fmt(number, 4);
+  return `<span class="lrt-cell ${cls}">${escapeHtml(label)}</span>`;
+}
+
+function passesRelaxContextThreshold(row) {
+  const q = Number(row.q_value);
+  const p = Number(row.p_value);
+  return (Number.isFinite(q) && q <= 0.1) || (Number.isFinite(p) && p <= 0.1);
+}
+
+function felSelectionInterpretation(row) {
+  if (row.selection_interpretation) return row.selection_interpretation;
+  if (row.direction === "diversifying") return "Positive selection (dN > dS)";
+  if (row.direction === "purifying") return "Negative selection (dN < dS)";
+  if (row.direction === "neutral") return "Neutral (dN = dS)";
+  return "Unknown";
+}
+
+function felSelectionClass(row) {
+  const call = row.selection_call || row.direction;
+  if (call === "positive_selection" || call === "diversifying") return "positive-selection";
+  if (call === "negative_selection" || call === "purifying") return "negative-selection";
+  if (call === "neutral") return "neutral-selection";
+  return "unknown-selection";
 }
 
 function fmt(value, digits = 3) {
@@ -428,17 +494,19 @@ function sortedRows(rows, sortSpec) {
 }
 
 function table(rows, columns, exportName = "", options = {}) {
-  const sortable = Boolean(options.sortable && exportName);
+  const sortable = Boolean(exportName && options.sortable !== false);
   const sortSpec = sortable ? state.tableSorts[exportName] : null;
   const displayRows = sortable ? sortedRows(rows, sortSpec) : rows;
   if (exportName) tableExports.set(exportName, { rows: displayRows, columns });
   if (!displayRows.length) return `${exportToolbar({ tableId: exportName, filename: exportName })}<p class="muted">No rows to display.</p>`;
   const head = columns.map(col => {
-    if (!sortable) return `<th>${col.label}</th>`;
+    if (!sortable) return `<th>${escapeHtml(col.label)}</th>`;
     const isActive = sortSpec?.key === col.key;
     const direction = isActive ? sortSpec.direction : "";
-    const indicator = isActive ? (direction === "desc" ? "down" : "up") : "sort";
-    return `<th><button class="sortable-heading" data-sort-table="${exportName}" data-sort-key="${col.key}" aria-label="Sort by ${escapeHtml(col.label)}">${escapeHtml(col.label)} <span aria-hidden="true">${indicator}</span></button></th>`;
+    const ariaSort = isActive ? (direction === "desc" ? "descending" : "ascending") : "none";
+    const stateClass = isActive ? ` is-active is-${direction}` : "";
+    const stateText = isActive ? ` sorted ${ariaSort}` : "";
+    return `<th aria-sort="${ariaSort}"><button class="sortable-heading${stateClass}" data-sort-table="${exportName}" data-sort-key="${col.key}" aria-label="Sort by ${escapeHtml(col.label)}${stateText}"><span class="sort-label">${escapeHtml(col.label)}</span><span class="sort-indicator" aria-hidden="true"></span></button></th>`;
   }).join("");
   const body = displayRows.map(row => (
     `<tr>${columns.map(col => `<td>${col.render ? col.render(row[col.key], row) : escapeHtml(fmt(row[col.key]))}</td>`).join("")}</tr>`
@@ -460,12 +528,11 @@ function tabs() {
   const labels = [
     ["overview", "Overview"],
     ["qc", "Input QC"],
-    ["genes", "Gene-Level"],
+    ["genes", "Gene-Level Summary"],
     ["sites", "Site-Level"],
     ["branches", "Branch-Level"],
     ["mss", "MSS Charts"],
     ["input-trees", "Input Trees"],
-    ["browser", "Gene Browser"],
     ["warnings", "Warnings"],
     ["export", "Export"],
   ];
@@ -563,6 +630,55 @@ function barChart(rows, labelKey, valueKey, color = "#2d6cdf", id = "bar-chart",
     ${ticks}
     <line x1="58" y1="235" x2="720" y2="235" stroke="#17202a"/>
     <line x1="58" y1="50" x2="58" y2="235" stroke="#17202a"/>
+    ${bars}
+  </svg>`;
+}
+
+function branchLabelCoverageChart(rows, id = "branch-label-coverage") {
+  const width = 760;
+  const rowHeight = 26;
+  const height = 112 + rows.length * rowHeight;
+  const plot = { left: 112, right: 710, top: 56, bottom: height - 44 };
+  const max = Math.max(1, ...rows.map(row => Number(row.test_branches || 0) + Number(row.reference_branches || 0)));
+  const x = value => plot.left + (Number(value || 0) / max) * (plot.right - plot.left);
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map(fraction => {
+    const value = Math.round(max * fraction);
+    const xx = x(value);
+    return `<g>
+      <line x1="${xx}" y1="${plot.top - 6}" x2="${xx}" y2="${plot.bottom}" stroke="#e5eaf1"/>
+      <text x="${xx}" y="${plot.bottom + 18}" text-anchor="middle" font-size="10.5" fill="#64748b">${value}</text>
+    </g>`;
+  }).join("");
+  const bars = rows.map((row, index) => {
+    const y = plot.top + index * rowHeight;
+    const test = Number(row.test_branches || 0);
+    const reference = Number(row.reference_branches || 0);
+    const testWidth = Math.max(0, x(test) - plot.left);
+    const referenceWidth = Math.max(0, x(test + reference) - x(test));
+    const label = `${row.segment}-${row.label_set}`;
+    return `<g>
+      <text x="${plot.left - 12}" y="${y + 13}" text-anchor="end" font-size="11" fill="#334155">${escapeHtml(label)}</text>
+      <rect x="${plot.left}" y="${y + 3}" width="${testWidth}" height="14" rx="2" fill="#138a8a">
+        <title>${escapeHtml(label)}; Test branches ${test}; Reference branches ${reference}</title>
+      </rect>
+      <rect x="${x(test)}" y="${y + 3}" width="${referenceWidth}" height="14" rx="2" fill="#d9e2ec">
+        <title>${escapeHtml(label)}; Test branches ${test}; Reference branches ${reference}</title>
+      </rect>
+      <text x="${Math.min(plot.right + 6, x(test + reference) + 6)}" y="${y + 14}" font-size="10.5" fill="#475569">${test}/${reference}</text>
+    </g>`;
+  }).join("");
+  return `<svg id="${id}" class="chart publication-svg" viewBox="0 0 ${width} ${height}" role="img">
+    <rect width="${width}" height="${height}" fill="#ffffff"/>
+    <text x="${plot.left}" y="24" font-size="15" font-weight="700" fill="#17202a">RELAX branch label coverage</text>
+    <g class="chart-legend">
+      <rect x="${plot.left}" y="34" width="10" height="10" rx="2" fill="#138a8a"/>
+      <text x="${plot.left + 15}" y="43" font-size="11" fill="#475569">Test</text>
+      <rect x="${plot.left + 68}" y="34" width="10" height="10" rx="2" fill="#d9e2ec"/>
+      <text x="${plot.left + 83}" y="43" font-size="11" fill="#475569">Reference</text>
+      <text x="${plot.right - 80}" y="43" font-size="11" fill="#475569">labels: Test/Reference</text>
+    </g>
+    ${ticks}
+    <line x1="${plot.left}" y1="${plot.bottom}" x2="${plot.right}" y2="${plot.bottom}" stroke="#8792a2"/>
     ${bars}
   </svg>`;
 }
@@ -673,46 +789,38 @@ function tickValues(length, step) {
   return values;
 }
 
-function bubblePlot(data, id = "selection-burden-bubble") {
-  const width = 900;
-  const height = 300;
-  const maxMeme = Math.max(1, ...data.genes.map(g => g.meme_sites));
-  const maxAbsrel = Math.max(1, ...data.genes.map(g => g.absrel_branches));
-  const palette = ["#138a8a", "#2d6cdf", "#c97924", "#7c3aed", "#2f8f5b", "#c84630", "#64748b", "#0f766e", "#b45309"];
-  const points = data.genes.map((gene, index) => {
-    const x = 70 + (gene.absrel_branches / maxAbsrel) * 560;
-    const y = 230 - (gene.meme_sites / maxMeme) * 180;
-    const r = 8 + Math.min(20, Math.sqrt(gene.absrel_branches) * 5);
-    const color = palette[index % palette.length];
-    return `<g class="bubble" data-run="${gene.gene_id}">
-      <circle cx="${x}" cy="${y}" r="${r}" fill="${color}" stroke="#17202a" stroke-width="1.1" opacity="0.82">
-        <title>${escapeHtml(gene.gene_id)}; foreground MEME ${gene.meme_sites}; foreground aBSREL ${gene.absrel_branches}</title>
-      </circle>
-      <text x="${x}" y="${y + 4}" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">${index + 1}</text>
-    </g>`;
-  }).join("");
-  const legend = data.genes.map((gene, index) => {
-    const y = 54 + index * 22;
-    const color = palette[index % palette.length];
-    return `<g>
-      <circle cx="705" cy="${y - 4}" r="6" fill="${color}" stroke="#17202a" stroke-width="0.8"/>
-      <text x="718" y="${y}" font-size="11" fill="#17202a">${index + 1}. ${escapeHtml(gene.gene_id)}</text>
-    </g>`;
-  }).join("");
-  return `<svg id="${id}" class="chart publication-svg" viewBox="0 0 ${width} ${height}">
-    <rect width="${width}" height="${height}" fill="#ffffff"/>
-    <text x="60" y="25" font-size="15" font-weight="700" fill="#17202a">Selection burden by run</text>
-    <line x1="60" y1="50" x2="650" y2="50" stroke="#e5eaf1"/>
-    <line x1="60" y1="110" x2="650" y2="110" stroke="#e5eaf1"/>
-    <line x1="60" y1="170" x2="650" y2="170" stroke="#e5eaf1"/>
-    <line x1="60" y1="230" x2="650" y2="230" stroke="#8792a2"/>
-    <line x1="60" y1="40" x2="60" y2="230" stroke="#8792a2"/>
-    <text x="355" y="280" text-anchor="middle" font-size="12" fill="#374151">Foreground aBSREL selected branches</text>
-    <text x="18" y="145" transform="rotate(-90 18 145)" text-anchor="middle" font-size="12" fill="#374151">Foreground MEME candidate sites</text>
-    <text x="700" y="30" font-size="12" font-weight="700" fill="#374151">Runs</text>
-    ${points}
-    ${legend}
-  </svg>`;
+function parseMssParameter(parameter) {
+  const match = String(parameter || "").match(/^alpha_([ACGT]{3})_([ACGT]{3})$/);
+  if (!match) {
+    return {
+      codon1: "",
+      codon2: "",
+      codon_pair: String(parameter || "").replace("alpha_", ""),
+      amino_acid: "Unknown",
+      synonymous: false,
+    };
+  }
+  const codon1 = match[1];
+  const codon2 = match[2];
+  const aa1 = CODON_TO_AA[codon1] || "Unknown";
+  const aa2 = CODON_TO_AA[codon2] || "Unknown";
+  return {
+    codon1,
+    codon2,
+    codon_pair: `${codon1} <-> ${codon2}`,
+    amino_acid: aa1 === aa2 ? aa1 : `${aa1}/${aa2}`,
+    synonymous: aa1 === aa2 && aa1 !== "Unknown" && aa1 !== "Stop",
+  };
+}
+
+function decorateMssParameter(row) {
+  const parsed = parseMssParameter(row.parameter);
+  return {
+    ...row,
+    ...parsed,
+    parameter_label: String(row.parameter || "").replace("alpha_", ""),
+    active_fraction: Number(row.active_fraction || 0),
+  };
 }
 
 function mssRunSummaryPlot(data, id = "mss-run-summary-plot") {
@@ -815,8 +923,111 @@ function mssParameterPlot(data, gene, id = `mss-parameters-${fileSafe(gene.gene_
     .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id)
     .sort((a, b) => Number(b.active_fraction || 0) - Number(a.active_fraction || 0))
     .slice(0, 14)
-    .map(row => ({ parameter: String(row.parameter).replace("alpha_", ""), fraction: Number(row.active_fraction || 0) }));
-  return barChart(rows, "parameter", "fraction", "#2d6cdf", id, `${gene.gene_id} recurrent MSS parameters`, "Active model fraction");
+    .map(decorateMssParameter);
+  const width = 820;
+  const rowHeight = 25;
+  const height = 88 + rows.length * rowHeight;
+  const plot = { left: 178, right: 760, top: 54, bottom: height - 38 };
+  const x = value => plot.left + Math.max(0, Math.min(1, Number(value || 0))) * (plot.right - plot.left);
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map(value => {
+    const xx = x(value);
+    return `<g>
+      <line x1="${xx}" y1="${plot.top - 6}" x2="${xx}" y2="${plot.bottom}" stroke="#e5eaf1"/>
+      <text x="${xx}" y="${plot.bottom + 18}" text-anchor="middle" font-size="10.5" fill="#64748b">${value.toFixed(2)}</text>
+    </g>`;
+  }).join("");
+  const points = rows.map((row, index) => {
+    const y = plot.top + index * rowHeight;
+    const xx = x(row.active_fraction);
+    const color = AA_COLORS[row.amino_acid] || "#2d6cdf";
+    const label = `${row.codon_pair} (${row.amino_acid})`;
+    return `<g>
+      <text x="${plot.left - 12}" y="${y + 5}" text-anchor="end" font-size="11" fill="#334155">${escapeHtml(label)}</text>
+      <line x1="${plot.left}" y1="${y}" x2="${xx}" y2="${y}" stroke="${color}" stroke-width="2.2"/>
+      <circle cx="${xx}" cy="${y}" r="5" fill="${color}" stroke="#17202a" stroke-width="0.8">
+        <title>${escapeHtml(row.parameter)}; ${escapeHtml(row.amino_acid)}; active fraction ${fmt(row.active_fraction, 3)}</title>
+      </circle>
+      <text x="${Math.min(plot.right + 6, xx + 8)}" y="${y + 4}" font-size="10.5" fill="#475569">${fmt(row.active_fraction, 3)}</text>
+    </g>`;
+  }).join("");
+  return `<svg id="${id}" class="chart publication-svg" viewBox="0 0 ${width} ${height}" role="img">
+    <rect width="${width}" height="${height}" fill="#ffffff"/>
+    <text x="${plot.left}" y="24" font-size="15" font-weight="700" fill="#17202a">${gene.gene_id} top MSS codon-pair parameters</text>
+    <text x="${plot.left}" y="40" font-size="11" fill="#64748b">Each point is a synonymous codon-pair parameter; x-axis is active fraction across fitted MSS-GA models.</text>
+    ${ticks}
+    <line x1="${plot.left}" y1="${plot.bottom}" x2="${plot.right}" y2="${plot.bottom}" stroke="#8792a2"/>
+    ${points}
+  </svg>`;
+}
+
+function mssFamilyHeatmaps(data, gene, id = `mss-family-heatmaps-${fileSafe(gene.gene_id)}`) {
+  const rows = data.mssParameters
+    .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id)
+    .map(decorateMssParameter)
+    .filter(row => row.synonymous)
+    .sort((a, b) => Number(b.active_fraction || 0) - Number(a.active_fraction || 0))
+    .slice(0, 40);
+  const byAa = new Map();
+  rows.forEach(row => {
+    if (!byAa.has(row.amino_acid)) byAa.set(row.amino_acid, []);
+    byAa.get(row.amino_acid).push(row);
+  });
+  const families = [...byAa.entries()]
+    .sort((a, b) => Math.max(...b[1].map(row => row.active_fraction)) - Math.max(...a[1].map(row => row.active_fraction)))
+    .slice(0, 8);
+  const width = 840;
+  const panelWidth = 200;
+  const panelHeight = 178;
+  const columns = 4;
+  const rowsOfPanels = Math.max(1, Math.ceil(families.length / columns));
+  const height = 54 + rowsOfPanels * panelHeight;
+  const color = value => {
+    const t = Math.max(0, Math.min(1, (Number(value || 0) - 0.5) / 0.5));
+    const light = 92 - t * 48;
+    return `hsl(206 70% ${light}%)`;
+  };
+  const panels = families.map(([aa, familyRows], panelIndex) => {
+    const col = panelIndex % columns;
+    const rowIndex = Math.floor(panelIndex / columns);
+    const originX = 30 + col * panelWidth;
+    const originY = 48 + rowIndex * panelHeight;
+    const codons = [...new Set(familyRows.flatMap(row => [row.codon1, row.codon2]))].sort();
+    const cell = Math.min(28, Math.floor(112 / Math.max(1, codons.length)));
+    const matrixX = originX + 58;
+    const matrixY = originY + 28;
+    const lookup = new Map();
+    familyRows.forEach(row => {
+      lookup.set(`${row.codon1}|${row.codon2}`, row.active_fraction);
+      lookup.set(`${row.codon2}|${row.codon1}`, row.active_fraction);
+    });
+    const cells = codons.flatMap((codon1, yIndex) => codons.map((codon2, xIndex) => {
+      if (xIndex <= yIndex) {
+        return `<rect x="${matrixX + xIndex * cell}" y="${matrixY + yIndex * cell}" width="${cell - 1}" height="${cell - 1}" fill="#ffffff" stroke="#ffffff"/>`;
+      }
+      const value = codon1 === codon2 ? "" : lookup.get(`${codon1}|${codon2}`);
+      const fill = value === undefined || value === "" ? "#f8fafc" : color(value);
+      const tooltip = `${aa} ${codon1} <-> ${codon2}${value === undefined || value === "" ? "; no top parameter" : `; active fraction ${fmt(value, 3)}`}`;
+      return `<rect x="${matrixX + xIndex * cell}" y="${matrixY + yIndex * cell}" width="${cell - 1}" height="${cell - 1}" fill="${fill}" stroke="#ffffff">
+        <title>${escapeHtml(tooltip)}</title>
+      </rect>`;
+    })).join("");
+    const xLabels = codons.map((codon, index) => `<text x="${matrixX + index * cell + cell / 2}" y="${matrixY - 6}" text-anchor="middle" font-size="9.5" fill="#475569">${codon}</text>`).join("");
+    const yLabels = codons.map((codon, index) => `<text x="${matrixX - 8}" y="${matrixY + index * cell + cell / 2 + 3}" text-anchor="end" font-size="9.5" fill="#475569">${codon}</text>`).join("");
+    const top = familyRows[0];
+    return `<g>
+      <text x="${originX}" y="${originY}" font-size="13" font-weight="750" fill="#17202a">${escapeHtml(aa)}</text>
+      <text x="${originX}" y="${originY + 16}" font-size="10.5" fill="#64748b">top ${escapeHtml(top.codon_pair)} = ${fmt(top.active_fraction, 3)}</text>
+      ${xLabels}
+      ${yLabels}
+      ${cells}
+    </g>`;
+  }).join("");
+  return `<svg id="${id}" class="chart publication-svg" viewBox="0 0 ${width} ${height}" role="img">
+    <rect width="${width}" height="${height}" fill="#ffffff"/>
+    <text x="28" y="24" font-size="15" font-weight="700" fill="#17202a">${gene.gene_id} synonymous-family MSS heatmaps</text>
+    <text x="520" y="24" font-size="10.5" fill="#64748b">Darker cells = higher active fraction</text>
+    ${panels || `<text x="28" y="62" font-size="12" fill="#64748b">No synonymous codon-pair parameters available.</text>`}
+  </svg>`;
 }
 
 function mssPage(data) {
@@ -828,7 +1039,8 @@ function mssPage(data) {
   const runParameters = data.mssParameters
     .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id)
     .sort((a, b) => Number(b.active_fraction || 0) - Number(a.active_fraction || 0))
-    .slice(0, 30);
+    .slice(0, 30)
+    .map(decorateMssParameter);
   return `<section class="page grid">
     <section class="panel">
       <div class="panel-title-row">
@@ -878,6 +1090,12 @@ function mssPage(data) {
       </section>
     </div>
     <section class="panel">
+      <h2>Synonymous Codon-Pair Heatmaps</h2>
+      <p class="muted">Within each amino-acid family, cells show recurrent MSS support for a specific synonymous codon-pair parameter. Non-top or unavailable pairs are left pale.</p>
+      ${exportToolbar({ svgId: `mss-family-heatmaps-${fileSafe(gene.gene_id)}`, filename: `${gene.gene_id}_mss_synonymous_family_heatmaps` })}
+      ${mssFamilyHeatmaps(data, gene)}
+    </section>
+    <section class="panel">
       <h2>MSS Run Summary</h2>
       ${table(runMss, [
         { key: "segment", label: "Segment" },
@@ -909,6 +1127,8 @@ function mssPage(data) {
         <h2>Top MSS Parameters</h2>
         ${table(runParameters, [
           { key: "parameter", label: "Parameter" },
+          { key: "codon_pair", label: "Codon pair" },
+          { key: "amino_acid", label: "AA family" },
           { key: "active_models", label: "Active models" },
           { key: "model_count", label: "Models" },
           { key: "active_fraction", label: "Active fraction" },
@@ -1566,18 +1786,11 @@ function overview(data) {
       { label: "MSS models", value: mssModels },
       { label: "High warnings", value: highWarnings },
     ])}
-    <div class="grid two-col">
-      <section class="panel">
-        <h2>Method Status Heatmap</h2>
-        ${exportToolbar({ tableId: "method_status_heatmap", svgId: "method-status-heatmap", filename: "method_status_heatmap" })}
-        ${statusHeatmap(data)}
-      </section>
-      <section class="panel">
-        <h2>Selection Burden Bubble Plot</h2>
-        ${exportToolbar({ svgId: "selection-burden-bubble", filename: "selection_burden_bubble_plot" })}
-        ${bubblePlot(data)}
-      </section>
-    </div>
+    <section class="panel">
+      <h2>Method Status Heatmap</h2>
+      ${exportToolbar({ tableId: "method_status_heatmap", svgId: "method-status-heatmap", filename: "method_status_heatmap" })}
+      ${statusHeatmap(data)}
+    </section>
   </section>`;
 }
 
@@ -1599,7 +1812,7 @@ function qcPage(data) {
       <section class="panel">
         <h2>Branch Label Coverage</h2>
         ${exportToolbar({ svgId: "branch-label-coverage", filename: "branch_label_coverage" })}
-        ${barChart(data.relax.map(row => ({ run: `${row.segment}_${row.label_set}`, test: row.test_branches })), "run", "test", "#138a8a", "branch-label-coverage", "RELAX test branch coverage", "Test branches")}
+        ${branchLabelCoverageChart(data.relax)}
       </section>
     </div>
     <section class="panel">
@@ -1623,12 +1836,13 @@ function genesPage(data) {
       </div>
       ${table(data.genes.filter(g => g.gene_id.toLowerCase().includes(state.search.toLowerCase())), [
         { key: "gene_id", label: "Run" },
-        { key: "n_sequences", label: "Sequences" },
+        { key: "n_sequences", label: "Seqs" },
         { key: "codons", label: "Codons" },
-        { key: "fel_sites", label: "FEL" },
-        { key: "meme_sites", label: "Foreground MEME" },
-        { key: "absrel_branches", label: "Foreground aBSREL" },
+        { key: "fel_sites", label: "FEL sites" },
+        { key: "meme_sites", label: "MEME sites" },
+        { key: "absrel_branches", label: "aBSREL branches" },
         { key: "relax_k", label: "RELAX K" },
+        { key: "relax_lrt", label: "RELAX LRT", render: value => lrtCell(value) },
         { key: "relax_p", label: "RELAX p" },
         { key: "relax_q", label: "RELAX q" },
         { key: "mss_models", label: "MSS models" },
@@ -1683,7 +1897,11 @@ function sitesPage(data) {
         { key: "alpha", label: "alpha" },
         { key: "beta", label: "beta" },
         { key: "omega", label: "omega" },
-        { key: "direction", label: "Direction" },
+        {
+          key: "selection_interpretation",
+          label: "Selection call",
+          render: (_, row) => `<span class="selection-call ${felSelectionClass(row)}">${escapeHtml(felSelectionInterpretation(row))}</span>`,
+        },
         { key: "gap_fraction", label: "Gap fraction" },
         { key: "entropy", label: "Entropy" },
         { key: "non_gap_sequences", label: "Non-gap seqs" },
@@ -1691,7 +1909,7 @@ function sitesPage(data) {
         { key: "lrt", label: "LRT" },
         { key: "fdr_status", label: "FDR", render: value => badge(value) },
         { key: "status", label: "Status", render: value => badge(value) },
-      ], `${gene.gene_id}_fel_sites_visible`)}
+      ], `${gene.gene_id}_fel_sites_visible`, { sortable: true })}
     </section>
     <section class="panel">
       <h2>MEME Foreground Site Table</h2>
@@ -1714,6 +1932,7 @@ function sitesPage(data) {
 
 function branchesPage(data) {
   const gene = data.genes.find(row => row.gene_id === state.selectedRun) ?? data.genes[0];
+  const relaxRows = state.showRelaxNonSignificant ? data.relax : data.relax.filter(passesRelaxContextThreshold);
   return `<section class="page grid">
     <section class="panel">
       <h2>Linked RELAX/Foreground aBSREL Tree</h2>
@@ -1744,12 +1963,13 @@ function branchesPage(data) {
     </section>
     <section class="panel">
       <h2>Foreground aBSREL Branch-Level Selection</h2>
+      <p class="muted">aBSREL reports a HyPhy-corrected branch p-value; the dashboard also reports a per-run BH q-value computed from raw branch p-values.</p>
       ${table(data.absrel, [
         { key: "segment", label: "Segment" },
         { key: "label_set", label: "Tree" },
         { key: "branch", label: "Branch" },
-        { key: "corrected_p_value", label: "Corrected p" },
-        { key: "q_value", label: "BH q" },
+        { key: "corrected_p_value", label: "HyPhy corrected p" },
+        { key: "q_value", label: "Raw-p BH q" },
         { key: "lrt", label: "LRT" },
         { key: "branch_length", label: "Branch length" },
         { key: "status", label: "Status", render: value => badge(value) },
@@ -1757,12 +1977,17 @@ function branchesPage(data) {
     </section>
     <section class="panel">
       <h2>RELAX Context</h2>
-      ${table(data.relax, [
+      <label class="checkbox-control">
+        <input type="checkbox" id="relax-nonsig-toggle" ${state.showRelaxNonSignificant ? "checked" : ""}>
+        Include RELAX rows with p and q > 0.10
+      </label>
+      ${table(relaxRows, [
         { key: "segment", label: "Segment" },
         { key: "label_set", label: "Tree" },
         { key: "test_branches", label: "Test branches" },
         { key: "reference_branches", label: "Reference branches" },
         { key: "k", label: "K" },
+        { key: "lrt", label: "LRT", render: value => lrtCell(value) },
         { key: "p_value", label: "p" },
         { key: "q_value", label: "BH q" },
         { key: "interpretation", label: "Interpretation" },
@@ -1867,9 +2092,10 @@ function browserPage(data) {
       ${table([gene], [
         { key: "gene_id", label: "Run" },
         { key: "fel_sites", label: "FEL" },
-        { key: "meme_sites", label: "Foreground MEME" },
-        { key: "absrel_branches", label: "Foreground aBSREL" },
+        { key: "meme_sites", label: "MEME sites" },
+        { key: "absrel_branches", label: "aBSREL branches" },
         { key: "relax_k", label: "RELAX K" },
+        { key: "relax_lrt", label: "RELAX LRT", render: value => lrtCell(value) },
         { key: "relax_p", label: "RELAX p" },
         { key: "relax_q", label: "RELAX q" },
         { key: "mss_models", label: "MSS models" },
@@ -1947,10 +2173,10 @@ function render() {
     branches: branchesPage,
     mss: mssPage,
     "input-trees": inputTreesPage,
-    browser: browserPage,
     warnings: warningsPage,
     export: exportPage,
   };
+  if (!pages[state.tab]) state.tab = "overview";
   app.innerHTML = `${tabs()}${pages[state.tab](DATA)}`;
   app.querySelectorAll(".tab[data-tab]").forEach(button => {
     button.addEventListener("click", () => {
@@ -2002,6 +2228,10 @@ function render() {
   });
   app.querySelector("#domain-track-toggle")?.addEventListener("change", event => {
     state.showDomainTrack = event.target.checked;
+    render();
+  });
+  app.querySelector("#relax-nonsig-toggle")?.addEventListener("change", event => {
+    state.showRelaxNonSignificant = event.target.checked;
     render();
   });
   app.querySelectorAll("[data-export-table]").forEach(button => {

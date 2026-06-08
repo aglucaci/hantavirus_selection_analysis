@@ -133,6 +133,26 @@ ONLY=RELAX FORCE=1 VERBOSE=1 RELAX_STARTING_POINTS=10 bash scripts/run_hantaviru
 it can help check whether RELAX convergence warnings or local maxima are
 affecting the inferred K value, but it will make RELAX slower.
 
+You can also set this in the workflow config file:
+
+```text
+config/hantavirus_hyphy_selection.env
+```
+
+For example:
+
+```bash
+: "${RELAX_STARTING_POINTS:=10}"
+```
+
+The config file is sourced automatically by
+`scripts/run_hantavirus_hyphy_selection.sh`. Inline environment variables still
+override config values, so this still works:
+
+```bash
+RELAX_STARTING_POINTS=25 ONLY=RELAX FORCE=1 bash scripts/run_hantavirus_hyphy_selection.sh
+```
+
 To run only FEL for the ANDV tree/alignment sample sheet:
 
 ```bash
@@ -286,16 +306,23 @@ Shortcut: build the tables and start the local server in one command:
 bash scripts/run_js_dashboard.sh
 ```
 
+The shortcut starts at port `8502` and automatically tries the next port if
+that one is already in use. Open the URL printed by the script, for example:
+
+```text
+http://127.0.0.1:8502/dashboard-js/
+```
+
+To choose a different starting port:
+
+```bash
+DASHBOARD_PORT=8510 bash scripts/run_js_dashboard.sh
+```
+
 For a different results folder with the shortcut:
 
 ```bash
 HYPHY_RESULTS_DIR=results/hantavirus_hyphy bash scripts/run_js_dashboard.sh
-```
-
-Then open:
-
-```text
-http://127.0.0.1:8502/dashboard-js/
 ```
 
 To rebuild the MSS manuscript tables and relaunch the JavaScript dashboard:
@@ -420,6 +447,19 @@ The default output files are full FASTA files, not sparse codon maps:
 results/ANDV_trees_aln-hyphy/ancestral_sequences/*_MEME_imputed.ancestral_codons.fasta
 results/ANDV_trees_aln-hyphy/ancestral_sequences/*_MEME_imputed.ancestral_amino_acids.fasta
 ```
+
+These FASTA files include terminal taxa, the `root`, and HyPhy internal
+`Node*` records. The matching trees are exported into the same folder:
+
+```text
+results/ANDV_trees_aln-hyphy/ancestral_sequences/*_MEME_imputed.hyphy_ready.treefile
+results/ANDV_trees_aln-hyphy/ancestral_sequences/*_MEME_imputed.hyphy_node_labeled.nwk
+```
+
+Use the `*.hyphy_node_labeled.nwk` files when tracking mutations by HyPhy
+internal node IDs. The long TSV files include `node_type` and `state_source`
+columns so you can distinguish root states, explicit branch substitutions,
+inherited states, and imputed tip states.
 
 If you explicitly include FEL, MEME, aBSREL, or RELAX in `--methods`, the
 extractor can still write sparse substitution-map exports for those methods.

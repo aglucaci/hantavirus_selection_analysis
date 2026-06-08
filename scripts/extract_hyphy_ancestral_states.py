@@ -7,7 +7,9 @@ import argparse
 import csv
 import json
 import re
+import shutil
 from collections import defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
 
 GENETIC_CODE = {
@@ -43,6 +45,80 @@ def node_type(node: str) -> str:
     if node.startswith("Node") or node.startswith("internal_"):
         return "internal"
     return "tip"
+
+
+@dataclass
+class NewickNode:
+    name: str = ""
+    children: list["NewickNode"] = field(default_factory=list)
+
+
+def parse_newick(text: str) -> NewickNode:
+    text = text.strip().rstrip(";")
+    index = 0
+
+    def skip_ws() -> None:
+        nonlocal index
+        while index < len(text) and text[index].isspace():
+            index += 1
+
+    def parse_label() -> str:
+        nonlocal index
+        skip_ws()
+        start = index
+        while index < len(text) and text[index] not in ":,();":
+            index += 1
+        return text[start:index].strip()
+
+    def skip_length() -> None:
+        nonlocal index
+        skip_ws()
+        if index < len(text) and text[index] == ":":
+            index += 1
+            while index < len(text) and text[index] not in ",();":
+                index += 1
+
+    def parse_subtree() -> NewickNode:
+        nonlocal index
+        skip_ws()
+        if index < len(text) and text[index] == "(":
+            index += 1
+            children = []
+            while True:
+                children.append(parse_subtree())
+                skip_ws()
+                if index < len(text) and text[index] == ",":
+                    index += 1
+                    continue
+                if index < len(text) and text[index] == ")":
+                    index += 1
+                    break
+                break
+            node = NewickNode(name=parse_label(), children=children)
+            skip_length()
+            return node
+        node = NewickNode(name=parse_label())
+        skip_length()
+        return node
+
+    root = parse_subtree()
+    if not root.name:
+        root.name = "root"
+    return root
+
+
+def iter_tree_nodes(root: NewickNode):
+    yield root
+    for child in root.children:
+        yield from iter_tree_nodes(child)
+
+
+def classify_tree_node(node: NewickNode) -> str:
+    if node.name == "root":
+        return "root"
+    if node.children:
+        return "internal"
+    return node_type(node.name)
 
 
 def translate_codon(codon: str) -> str:
@@ -103,6 +179,26 @@ def fallback_codons(sequence: str, codons: int) -> list[str]:
     return [clean_codon(sequence[index * 3 : index * 3 + 3]) for index in range(codons)]
 
 
+def export_run_trees(data: dict, results_dir: Path, outdir: Path, run_id: str, segment: str, group: str) -> list[Path]:
+    tree_files: list[Path] = []
+    source_tree = results_dir / "inputs" / f"{segment}_{group}.hyphy_ready.treefile"
+    if source_tree.exists():
+        copied_tree = outdir / f"{run_id}.hyphy_ready.treefile"
+        shutil.copyfile(source_tree, copied_tree)
+        tree_files.append(copied_tree)
+
+    trees_by_partition = data.get("input", {}).get("trees", {})
+    if isinstance(trees_by_partition, dict):
+        for partition, tree_text in sorted(trees_by_partition.items()):
+            if not isinstance(tree_text, str) or not tree_text.strip():
+                continue
+            suffix = "hyphy_node_labeled.nwk" if len(trees_by_partition) == 1 else f"partition_{partition}.hyphy_node_labeled.nwk"
+            node_tree = outdir / f"{run_id}.{suffix}"
+            node_tree.write_text(tree_text.rstrip(";") + ";\n")
+            tree_files.append(node_tree)
+    return tree_files
+
+
 def extract_file(path: Path, outdir: Path, include_tips: bool, results_dir: Path) -> dict:
     data = read_json(path)
     segment, group, method = parse_run_name(path)
@@ -120,6 +216,7 @@ def extract_file(path: Path, outdir: Path, include_tips: bool, results_dir: Path
         "codons": 0,
         "codon_fasta": "",
         "amino_acid_fasta": "",
+        "tree_files": "",
         "notes": "",
     }
     if data is None:
@@ -237,12 +334,19 @@ def extract_meme_imputed_file(
     fallback_records = read_fasta(results_dir / "inputs" / f"{segment}.hyphy_ready.fasta")
     if fallback_records and max_codon <= 0:
         max_codon = max(len(sequence) // 3 for sequence in fallback_records.values())
+    substitutions_by_partition = data.get("substitutions", {})
+    if not isinstance(substitutions_by_partition, dict):
+        substitutions_by_partition = {}
+    trees_by_partition = data.get("input", {}).get("trees", {})
+    if not isinstance(trees_by_partition, dict):
+        trees_by_partition = {}
 
     long_rows: list[dict] = []
     sequence_count = 0
     partitions_seen = 0
     codon_fasta = outdir / f"{run_id}.ancestral_codons.fasta"
     aa_fasta = outdir / f"{run_id}.ancestral_amino_acids.fasta"
+    tree_files = export_run_trees(data, results_dir, outdir, run_id, segment, group)
 
     with codon_fasta.open("w") as codon_handle, aa_fasta.open("w") as aa_handle:
         for partition, sites in sorted(imputed_by_partition.items()):
@@ -251,36 +355,77 @@ def extract_meme_imputed_file(
             partitions_seen += 1
             partition_max = max([int(key) + 1 for key, value in sites.items() if isinstance(value, dict)] or [max_codon])
             codon_count = max(max_codon, partition_max)
-            taxa = set(fallback_records)
+            tree_text = trees_by_partition.get(partition)
+            root = parse_newick(tree_text) if isinstance(tree_text, str) and tree_text.strip() else NewickNode("root")
+            if root.name != "root":
+                root = NewickNode("root", [root])
+            tree_node_names = {node.name for node in iter_tree_nodes(root) if node.name}
+            imputed_names = set(fallback_records)
             for site_records in sites.values():
                 if isinstance(site_records, dict):
-                    taxa.update(site_records)
+                    imputed_names.update(site_records)
+            for name in sorted(imputed_names - tree_node_names):
+                root.children.append(NewickNode(name))
+                tree_node_names.add(name)
 
-            for taxon in sorted(taxa):
-                codons = fallback_codons(fallback_records.get(taxon, ""), codon_count)
+            node_codons: dict[str, list[str]] = {
+                node.name: fallback_codons(fallback_records.get(node.name, ""), codon_count)
+                for node in iter_tree_nodes(root)
+                if node.name
+            }
+            for codons in node_codons.values():
                 if len(codons) < codon_count:
                     codons.extend(["NNN"] * (codon_count - len(codons)))
 
-                for site_key, site_records in sites.items():
-                    if not isinstance(site_records, dict):
-                        continue
-                    try:
-                        codon_position = int(site_key) + 1
-                    except ValueError:
-                        continue
-                    payload = site_records.get(taxon)
-                    if not isinstance(payload, dict):
-                        continue
-                    codon, probability = best_codon(payload.get("imputed"))
-                    source = "imputed"
-                    if not codon:
-                        codon, probability = best_codon(payload.get("observed"))
-                        source = "observed"
-                    if not codon:
-                        codon = codons[codon_position - 1] if codon_position <= len(codons) else "NNN"
-                        probability = ""
-                        source = "alignment_fallback"
-                    codons[codon_position - 1] = codon
+            substitution_sites = substitutions_by_partition.get(partition, {})
+            if not isinstance(substitution_sites, dict):
+                substitution_sites = {}
+
+            def state_from_imputed(site_records: dict, name: str) -> tuple[str, float | str, str, str]:
+                payload = site_records.get(name)
+                if not isinstance(payload, dict):
+                    return "", "", "", ""
+                codon, probability = best_codon(payload.get("imputed"))
+                source = "imputed_tip"
+                if not codon:
+                    codon, probability = best_codon(payload.get("observed"))
+                    source = "observed_tip"
+                return codon, probability, source, payload.get("support", "")
+
+            for codon_position in range(1, codon_count + 1):
+                site_key = str(codon_position - 1)
+                site_records = sites.get(site_key)
+                if not isinstance(site_records, dict):
+                    site_records = {}
+                substitution_states = substitution_sites.get(site_key)
+                if not isinstance(substitution_states, dict):
+                    substitution_states = {}
+
+                root_codon = clean_codon(substitution_states.get("root", "NNN"))
+                if root_codon == "NNN":
+                    root_codon, _, _, _ = state_from_imputed(site_records, "root")
+                if not root_codon:
+                    root_codon = "NNN"
+
+                def fill_node(node: NewickNode, inherited_codon: str) -> None:
+                    name = node.name
+                    if not name:
+                        return
+                    explicit = substitution_states.get(name)
+                    codon = clean_codon(explicit) if explicit is not None else inherited_codon
+                    source = "root_state" if name == "root" else "inherited_from_parent"
+                    probability: float | str = ""
+                    support: float | str = ""
+
+                    if explicit is not None:
+                        source = "explicit_substitution" if name != "root" else "root_state"
+                    elif not node.children:
+                        imputed_codon, probability, imputed_source, support = state_from_imputed(site_records, name)
+                        if imputed_codon:
+                            codon = imputed_codon
+                            source = imputed_source
+
+                    node_codons[name][codon_position - 1] = codon
                     long_rows.append(
                         {
                             "run_id": run_id,
@@ -289,16 +434,27 @@ def extract_meme_imputed_file(
                             "method": method,
                             "partition": partition,
                             "codon_position": codon_position,
-                            "sequence": taxon,
+                            "sequence": name,
+                            "node": name,
+                            "node_type": classify_tree_node(node),
                             "codon_state": codon,
                             "amino_acid_state": translate_codon(codon),
                             "state_source": source,
                             "posterior_probability": probability,
-                            "support": payload.get("support", ""),
+                            "support": support,
                         }
                     )
+                    for child in node.children:
+                        fill_node(child, codon)
 
-                header = f"{run_id}|partition={partition}|sequence={taxon}|type=imputed_full"
+                fill_node(root, root_codon)
+
+            for node in sorted(iter_tree_nodes(root), key=lambda item: (classify_tree_node(item), item.name)):
+                name = node.name
+                if not name or name not in node_codons:
+                    continue
+                codons = node_codons[name]
+                header = f"{run_id}|partition={partition}|node={name}|type={classify_tree_node(node)}|source=MEME_imputed_full"
                 aas = [translate_codon(codon) if codon != "NNN" else "X" for codon in codons]
                 codon_handle.write(f">{header}\n{wrap(''.join(codons))}\n")
                 aa_handle.write(f">{header}\n{wrap(''.join(aas))}\n")
@@ -315,6 +471,8 @@ def extract_meme_imputed_file(
             "partition",
             "codon_position",
             "sequence",
+            "node",
+            "node_type",
             "codon_state",
             "amino_acid_state",
             "state_source",
@@ -332,7 +490,8 @@ def extract_meme_imputed_file(
         codons=max_codon,
         codon_fasta=str(codon_fasta),
         amino_acid_fasta=str(aa_fasta),
-        notes="Full sequences from MEME --impute-states Yes; highest posterior codon per sequence/site",
+        tree_files=";".join(str(path) for path in tree_files),
+        notes="Full tip and internal-node sequences from MEME --impute-states Yes plus HyPhy substitution-map propagation; state_source marks root, explicit substitutions, inherited states, and imputed tips",
     )
     return summary
 
@@ -371,7 +530,22 @@ def main() -> None:
 
     summary_path = outdir / "ancestral_extraction_summary.tsv"
     with summary_path.open("w", newline="") as handle:
-        fields = ["run_id", "segment", "group", "method", "json", "status", "partitions", "rows", "nodes", "codons", "codon_fasta", "amino_acid_fasta", "notes"]
+        fields = [
+            "run_id",
+            "segment",
+            "group",
+            "method",
+            "json",
+            "status",
+            "partitions",
+            "rows",
+            "nodes",
+            "codons",
+            "codon_fasta",
+            "amino_acid_fasta",
+            "tree_files",
+            "notes",
+        ]
         writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t")
         writer.writeheader()
         writer.writerows(summaries)

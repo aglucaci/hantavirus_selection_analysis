@@ -98,6 +98,16 @@ def fdr_status(q_value: float | None, p_value: float | None) -> str:
     return "not_selected"
 
 
+def fel_selection_call(direction: str) -> tuple[str, str]:
+    if direction == "diversifying":
+        return "positive_selection", "Positive selection (dN > dS)"
+    if direction == "purifying":
+        return "negative_selection", "Negative selection (dN < dS)"
+    if direction == "neutral":
+        return "neutral", "Neutral (dN = dS)"
+    return "unknown", "Unknown"
+
+
 def bayes_factor(prior: float | None, posterior: float | None) -> float | None:
     if prior is None or posterior is None:
         return None
@@ -397,6 +407,7 @@ def parse_fel(path: Path, segment: str, label_set: str) -> tuple[dict, list[dict
                 direction = "purifying"
             else:
                 direction = "neutral"
+            selection_call, selection_interpretation = fel_selection_call(direction)
             sites.append(
                 {
                     "segment": segment,
@@ -411,6 +422,8 @@ def parse_fel(path: Path, segment: str, label_set: str) -> tuple[dict, list[dict
                     "omega": omega,
                     "lrt": row[lrt_idx] if lrt_idx is not None else "",
                     "direction": direction,
+                    "selection_call": selection_call,
+                    "selection_interpretation": selection_interpretation,
                     "status": "selected" if q_value is not None and q_value <= 0.1 else "exploratory",
                     "fdr_status": fdr_status(q_value, p_value),
                 }
@@ -535,8 +548,8 @@ def parse_relax(path: Path, segment: str, label_set: str) -> tuple[dict, dict]:
 
 
 def apply_relax_fdr(analysis_summary: list[dict], relax_results: list[dict]) -> None:
-    for row in relax_results:
-        q_value = as_float(row.get("p_value"))
+    q_values = bh_q_values([as_float(row.get("p_value")) for row in relax_results])
+    for row, q_value in zip(relax_results, q_values):
         row["q_value"] = q_value
         row["neg_log10_q"] = safe_neg_log10(q_value)
         row["significant"] = bool(q_value is not None and q_value <= 0.05)
@@ -840,7 +853,24 @@ def main() -> None:
     write_tsv(
         OUT / "fel_sites.tsv",
         fel_sites,
-        ["segment", "label_set", "codon", "p_value", "q_value", "neg_log10_p", "neg_log10_q", "alpha", "beta", "omega", "lrt", "direction", "status", "fdr_status"],
+        [
+            "segment",
+            "label_set",
+            "codon",
+            "p_value",
+            "q_value",
+            "neg_log10_p",
+            "neg_log10_q",
+            "alpha",
+            "beta",
+            "omega",
+            "lrt",
+            "direction",
+            "selection_call",
+            "selection_interpretation",
+            "status",
+            "fdr_status",
+        ],
     )
     write_tsv(
         OUT / "meme_sites.tsv",

@@ -8,6 +8,12 @@ if [[ -n "${HYPHY_MSS_BF:-}" ]]; then
   HYPHY_MSS_ANALYSIS="$HYPHY_MSS_BF"
 fi
 
+HYPHY_CONFIG="${HYPHY_CONFIG:-config/hantavirus_hyphy_selection.env}"
+if [[ -f "$HYPHY_CONFIG" ]]; then
+  # shellcheck source=/dev/null
+  source "$HYPHY_CONFIG"
+fi
+
 RESULTS_ROOT="${RESULTS_ROOT:-results}"
 OUTDIR_OVERRIDE="${OUTDIR:-}"
 LOG_DIR_OVERRIDE="${LOG_DIR:-}"
