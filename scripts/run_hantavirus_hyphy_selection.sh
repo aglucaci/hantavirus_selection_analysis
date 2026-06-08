@@ -13,6 +13,7 @@ OUTDIR_OVERRIDE="${OUTDIR:-}"
 LOG_DIR_OVERRIDE="${LOG_DIR:-}"
 OUTDIR="${OUTDIR_OVERRIDE:-$RESULTS_ROOT/hantavirus_hyphy}"
 INPUT_DIR="$OUTDIR/inputs"
+MEME_IMPUTED_DIR="$OUTDIR/meme_imputed"
 LOG_DIR="${LOG_DIR_OVERRIDE:-$RESULTS_ROOT/logs}"
 SAMPLE_SHEET="${SAMPLE_SHEET:-sample_sheet.tsv}"
 FORCE="${FORCE:-0}"
@@ -26,7 +27,7 @@ FEL_BRANCHES="${FEL_BRANCHES:-$SELECTION_BRANCHES}"
 MEME_BRANCHES="${MEME_BRANCHES:-$SELECTION_BRANCHES}"
 ABSREL_BRANCHES="${ABSREL_BRANCHES:-$SELECTION_BRANCHES}"
 EXTRACT_ANCESTRAL="${EXTRACT_ANCESTRAL:-1}"
-ANCESTRAL_METHODS="${ANCESTRAL_METHODS:-FEL MEME}"
+ANCESTRAL_METHODS="${ANCESTRAL_METHODS:-MEME_imputed}"
 PROCESSED_OUTDIRS=""
 
 print_command() {
@@ -94,6 +95,23 @@ run_meme() {
       --alignment "$INPUT_DIR/${segment}.hyphy_ready.fasta" \
       --tree "$tree" \
       --branches "$MEME_BRANCHES" \
+      --output "$output"
+}
+
+run_meme_imputed() {
+  local segment="$1"
+  local group="$2"
+  local tree="$3"
+  local output="$MEME_IMPUTED_DIR/${segment}_${group}_MEME_imputed.json"
+
+  mkdir -p "$MEME_IMPUTED_DIR"
+
+  run_cmd "${segment}_${group}_MEME_imputed" "$output" \
+    "$HYPHY_BIN" "$HYPHY_BF_DIR/MEME.bf" \
+      --alignment "$INPUT_DIR/${segment}.hyphy_ready.fasta" \
+      --tree "$tree" \
+      --branches "$MEME_BRANCHES" \
+      --impute-states Yes \
       --output "$output"
 }
 
@@ -212,6 +230,7 @@ configure_output_dirs() {
   fi
 
   INPUT_DIR="$OUTDIR/inputs"
+  MEME_IMPUTED_DIR="$OUTDIR/meme_imputed"
 
   if [[ -n "$LOG_DIR_OVERRIDE" ]]; then
     LOG_DIR="$LOG_DIR_OVERRIDE"
@@ -221,7 +240,7 @@ configure_output_dirs() {
     LOG_DIR="$RESULTS_ROOT/logs"
   fi
 
-  mkdir -p "$OUTDIR" "$INPUT_DIR" "$LOG_DIR"
+  mkdir -p "$OUTDIR" "$INPUT_DIR" "$MEME_IMPUTED_DIR" "$LOG_DIR"
 }
 
 if [[ ! -f "$SAMPLE_SHEET" ]]; then
@@ -304,7 +323,11 @@ while IFS=$'\t' read -r segment group alignment tree source_tag extra || [[ -n "
 
   ready_tree="$INPUT_DIR/${segment}_${group}.hyphy_ready.treefile"
   if run_requested FEL; then run_fel "$segment" "$group" "$ready_tree"; fi
-  if run_requested MEME; then run_meme "$segment" "$group" "$ready_tree"; fi
+  if run_requested MEME; then
+    run_meme "$segment" "$group" "$ready_tree"
+    run_meme_imputed "$segment" "$group" "$ready_tree"
+  fi
+  if [[ "$ONLY" == "MEME_imputed" || "$ONLY" == "MEME_IMPUTED" ]]; then run_meme_imputed "$segment" "$group" "$ready_tree"; fi
   if run_requested aBSREL; then run_absrel "$segment" "$group" "$ready_tree"; fi
   if run_requested RELAX; then run_relax "$segment" "$group" "$ready_tree"; fi
   if run_requested MSS && [[ "$RUN_MSS" == "1" || "$ONLY" == "MSS" ]]; then run_mss "$segment" "$group" "$ready_tree"; fi

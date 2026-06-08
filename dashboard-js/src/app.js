@@ -14,6 +14,7 @@ const state = {
   showAlignmentQuality: true,
   showDomainTrack: true,
   treeViewBoxes: {},
+  tableSorts: {},
 };
 
 const tableFiles = {
@@ -408,11 +409,38 @@ function exportToolbar({ tableId = "", svgId = "", filename = "selectionscope_ex
   return buttons.length ? `<div class="export-toolbar">${buttons.join("")}</div>` : "";
 }
 
-function table(rows, columns, exportName = "") {
-  if (exportName) tableExports.set(exportName, { rows, columns });
-  if (!rows.length) return `${exportToolbar({ tableId: exportName, filename: exportName })}<p class="muted">No rows to display.</p>`;
-  const head = columns.map(col => `<th>${col.label}</th>`).join("");
-  const body = rows.map(row => (
+function compareTableValues(a, b) {
+  const aNumber = Number(a);
+  const bNumber = Number(b);
+  const aNumeric = a !== "" && a !== null && a !== undefined && Number.isFinite(aNumber);
+  const bNumeric = b !== "" && b !== null && b !== undefined && Number.isFinite(bNumber);
+  if (aNumeric && bNumeric) return aNumber - bNumber;
+  return String(a ?? "").localeCompare(String(b ?? ""), undefined, { numeric: true, sensitivity: "base" });
+}
+
+function sortedRows(rows, sortSpec) {
+  if (!sortSpec?.key) return rows;
+  const direction = sortSpec.direction === "desc" ? -1 : 1;
+  return [...rows].sort((a, b) => {
+    const result = compareTableValues(a[sortSpec.key], b[sortSpec.key]);
+    return result * direction;
+  });
+}
+
+function table(rows, columns, exportName = "", options = {}) {
+  const sortable = Boolean(options.sortable && exportName);
+  const sortSpec = sortable ? state.tableSorts[exportName] : null;
+  const displayRows = sortable ? sortedRows(rows, sortSpec) : rows;
+  if (exportName) tableExports.set(exportName, { rows: displayRows, columns });
+  if (!displayRows.length) return `${exportToolbar({ tableId: exportName, filename: exportName })}<p class="muted">No rows to display.</p>`;
+  const head = columns.map(col => {
+    if (!sortable) return `<th>${col.label}</th>`;
+    const isActive = sortSpec?.key === col.key;
+    const direction = isActive ? sortSpec.direction : "";
+    const indicator = isActive ? (direction === "desc" ? "down" : "up") : "sort";
+    return `<th><button class="sortable-heading" data-sort-table="${exportName}" data-sort-key="${col.key}" aria-label="Sort by ${escapeHtml(col.label)}">${escapeHtml(col.label)} <span aria-hidden="true">${indicator}</span></button></th>`;
+  }).join("");
+  const body = displayRows.map(row => (
     `<tr>${columns.map(col => `<td>${col.render ? col.render(row[col.key], row) : escapeHtml(fmt(row[col.key]))}</td>`).join("")}</tr>`
   )).join("");
   return `${exportToolbar({ tableId: exportName, filename: exportName })}
@@ -811,6 +839,20 @@ function mssPage(data) {
         ${runPicker(data, gene)}
       </div>
     </section>
+    <section class="panel">
+      <h2>MSS Context</h2>
+      ${table(data.mss, [
+        { key: "segment", label: "Segment" },
+        { key: "label_set", label: "Tree" },
+        { key: "files", label: "Files" },
+        { key: "model_count", label: "Models" },
+        { key: "best_ic", label: "Best IC" },
+        { key: "median_active_parameters", label: "Median active params" },
+        { key: "top_parameter", label: "Top parameter" },
+        { key: "top_parameter_frequency", label: "Top frequency" },
+        { key: "interpretation", label: "Interpretation" },
+      ], "mss_context_visible", { sortable: true })}
+    </section>
     <div class="grid two-col">
       <section class="panel">
         <h2>Across-Run MSS Summary</h2>
@@ -880,7 +922,7 @@ function lollipop(data, gene, { method = "MEME", id = `${method.toLowerCase()}-l
   const isFel = method === "FEL";
   const metric = siteMetricMeta();
   const sites = (isFel ? data.fel : data.meme)
-    .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id && passesSiteThreshold(row))
+    .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id && (isFel || (row.method || "MEME") === method) && passesSiteThreshold(row))
     .sort((a, b) => a.codon - b.codon);
   const width = 900;
   const height = 360;
@@ -1599,20 +1641,17 @@ function genesPage(data) {
 function sitesPage(data) {
   const gene = data.genes.find(row => row.gene_id === state.selectedRun) ?? data.genes[0];
   const metric = siteMetricMeta();
+  const annotateQuality = site => {
+    const quality = data.quality.find(row => `${row.segment}_${row.label_set}` === gene.gene_id && row.codon === site.codon) || {};
+    const warning = Number(quality.gap_fraction || 0) > 0.1 ? "gappy" : Number(quality.entropy || 0) > 1.5 ? "high entropy" : "";
+    return { ...site, gap_fraction: quality.gap_fraction ?? "", entropy: quality.entropy ?? "", non_gap_sequences: quality.non_gap_sequences ?? "", warning };
+  };
   const sites = data.meme
     .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id && passesSiteThreshold(row))
-    .map(site => {
-      const quality = data.quality.find(row => `${row.segment}_${row.label_set}` === gene.gene_id && row.codon === site.codon) || {};
-      const warning = Number(quality.gap_fraction || 0) > 0.1 ? "gappy" : Number(quality.entropy || 0) > 1.5 ? "high entropy" : "";
-      return { ...site, gap_fraction: quality.gap_fraction ?? "", entropy: quality.entropy ?? "", non_gap_sequences: quality.non_gap_sequences ?? "", warning };
-    });
+    .map(annotateQuality);
   const felSites = data.fel
     .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id && passesSiteThreshold(row))
-    .map(site => {
-      const quality = data.quality.find(row => `${row.segment}_${row.label_set}` === gene.gene_id && row.codon === site.codon) || {};
-      const warning = Number(quality.gap_fraction || 0) > 0.1 ? "gappy" : Number(quality.entropy || 0) > 1.5 ? "high entropy" : "";
-      return { ...site, gap_fraction: quality.gap_fraction ?? "", entropy: quality.entropy ?? "", non_gap_sequences: quality.non_gap_sequences ?? "", warning };
-    });
+    .map(annotateQuality);
   return `<section class="page grid">
     <section class="panel">
       <h2>Integrated Site-Level Browser</h2>
@@ -1728,20 +1767,6 @@ function branchesPage(data) {
         { key: "q_value", label: "BH q" },
         { key: "interpretation", label: "Interpretation" },
       ], "relax_results_visible")}
-    </section>
-    <section class="panel">
-      <h2>MSS Context</h2>
-      ${table(data.mss, [
-        { key: "segment", label: "Segment" },
-        { key: "label_set", label: "Tree" },
-        { key: "files", label: "Files" },
-        { key: "model_count", label: "Models" },
-        { key: "best_ic", label: "Best IC" },
-        { key: "median_active_parameters", label: "Median active params" },
-        { key: "top_parameter", label: "Top parameter" },
-        { key: "top_parameter_frequency", label: "Top frequency" },
-        { key: "interpretation", label: "Interpretation" },
-      ], "mss_results_visible")}
     </section>
   </section>`;
 }
@@ -1904,7 +1929,7 @@ function exportPage(data) {
         ${Object.values(tableFiles).map(file => `<a class="tab" href="${TABLE_ROOT}/${file}" download>${file}</a>`).join("")}
       </div>
       <h3>Draft Results Text</h3>
-      <p class="interpretation">Across the current hantavirus analyses, foreground-branch FEL identified ${data.fel.filter(row => row.direction === "diversifying" && passesSiteThreshold(row)).length} candidate pervasive diversifying sites at ${metric.longLabel} <= ${state.pThreshold.toFixed(2)}, foreground-branch MEME identified ${data.meme.filter(passesSiteThreshold).length} candidate episodic sites at ${metric.longLabel} <= ${state.pThreshold.toFixed(2)}, foreground aBSREL identified ${data.absrel.filter(row => row.status === "selected").length} selected branches at per-run BH FDR q <= 0.05, RELAX found ${data.relax.filter(row => row.significant === true).length} significant branch-set shifts at per-run BH FDR q <= 0.05, and MSS-GA evaluated ${data.mss.reduce((sum, row) => sum + Number(row.model_count || 0), 0)} synonymous-rate class models. Results should be interpreted with the duplicate-sequence and RELAX convergence warnings shown in the warning panel.</p>
+      <p class="interpretation">Across the current hantavirus analyses, foreground-branch FEL identified ${data.fel.filter(row => row.direction === "diversifying" && passesSiteThreshold(row)).length} candidate pervasive diversifying sites at ${metric.longLabel} <= ${state.pThreshold.toFixed(2)}, foreground-branch MEME identified ${data.meme.filter(passesSiteThreshold).length} candidate episodic sites, foreground aBSREL identified ${data.absrel.filter(row => row.status === "selected").length} selected branches at per-run BH FDR q <= 0.05, RELAX found ${data.relax.filter(row => row.significant === true).length} significant branch-set shifts at per-run BH FDR q <= 0.05, and MSS-GA evaluated ${data.mss.reduce((sum, row) => sum + Number(row.model_count || 0), 0)} synonymous-rate class models.</p>
     </section>
   </section>`;
 }
@@ -1944,6 +1969,18 @@ function render() {
   app.querySelector("#tree-search")?.addEventListener("input", event => {
     state.treeSearch = event.target.value;
     render();
+  });
+  app.querySelectorAll("[data-sort-table]").forEach(button => {
+    button.addEventListener("click", () => {
+      const tableName = button.dataset.sortTable;
+      const key = button.dataset.sortKey;
+      const current = state.tableSorts[tableName];
+      state.tableSorts[tableName] = {
+        key,
+        direction: current?.key === key && current.direction === "asc" ? "desc" : "asc",
+      };
+      render();
+    });
   });
   app.querySelectorAll("[data-tree-filter]").forEach(button => {
     button.addEventListener("click", () => {

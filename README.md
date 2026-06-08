@@ -1,7 +1,8 @@
 # Hantavirus HyPhy Selection Analyses
 
-This repository runs HyPhy FEL, MEME, aBSREL, and RELAX on prepared hantavirus
-codon alignments and labeled trees. MSS-GA is available but skipped by default.
+This repository runs HyPhy FEL, MEME, MEME with imputed states, aBSREL, and
+RELAX on prepared hantavirus codon alignments and labeled trees. MSS-GA is
+available but skipped by default.
 
 ## Environment
 
@@ -33,6 +34,12 @@ The workflow reads analyses from:
 sample_sheet.tsv
 ```
 
+For the current ANDV tree/alignment analyses, use:
+
+```text
+andv_trees_sample_sheet.tsv
+```
+
 The sample sheet has one row per segment and foreground-label group. The
 `source_tag` field controls the default results folder under `results/`:
 
@@ -56,15 +63,22 @@ To regenerate the repository sample sheets:
 python scripts/generate_sample_sheets.py
 ```
 
-The current analyses use these prepared input files:
+The current `andv_trees_sample_sheet.tsv` analyses use these prepared input
+files:
 
 ```text
-data/hantavirus/sequences_L_ex_lab_cells_2026_05_27v7.cds.linsi.fasta
-data/hantavirus/sequences_L_ex_lab_cells_2026_05_27v7.cds.linsi.rt.annot-ANDV.nwk
-data/hantavirus/sequences_L_ex_lab_cells_2026_05_27v7.cds.linsi.rt.annot-clade3.nwk
-data/hantavirus/sequences_S_ex_lab_cells_2026_05_27v5.cds.linsi.fasta
-data/hantavirus/sequences_S_ex_lab_cells_2026_05_27v5.cds.linsi.rt.annot-ANDV.nwk
-data/hantavirus/sequences_S_ex_lab_cells_2026_05_27v5.cds.linsi.rt.annot-clade3.nwk
+data/ANDV_trees_aln-hyphy/sequences_L_ex_lab_cells_2026_05_27v7.cds.linsi.fasta
+data/ANDV_trees_aln-hyphy/sequences_L_ex_lab_cells_2026_05_27v7.cds.linsi.rt.hyphy-ANDVall.nwk
+data/ANDV_trees_aln-hyphy/sequences_L_ex_lab_cells_2026_05_27v7.cds.linsi.rt.hyphy-ANDVstems.nwk
+data/ANDV_trees_aln-hyphy/sequences_L_ex_lab_cells_2026_05_27v7.cds.linsi.rt.hyphy-humanout.nwk
+data/ANDV_trees_aln-hyphy/sequences_M_ex_lab_cells_concat_2026_05_27v6.cds.linsi.fasta
+data/ANDV_trees_aln-hyphy/sequences_M_ex_lab_cells_concat_2026_05_27v6.cds.linsi.rt.hyphy-ANDVall.nwk
+data/ANDV_trees_aln-hyphy/sequences_M_ex_lab_cells_concat_2026_05_27v6.cds.linsi.rt.hyphy-ANDVstems.nwk
+data/ANDV_trees_aln-hyphy/sequences_M_ex_lab_cells_concat_2026_05_27v6.cds.linsi.rt.hyphy-humanout.nwk
+data/ANDV_trees_aln-hyphy/sequences_S_ex_lab_cells_2026_05_27v5.cds.linsi.fasta
+data/ANDV_trees_aln-hyphy/sequences_S_ex_lab_cells_2026_05_27v5.cds.linsi.rt.hyphy-ANDVall.nwk
+data/ANDV_trees_aln-hyphy/sequences_S_ex_lab_cells_2026_05_27v5.cds.linsi.rt.hyphy-ANDVstems.nwk
+data/ANDV_trees_aln-hyphy/sequences_S_ex_lab_cells_2026_05_27v5.cds.linsi.rt.hyphy-humanout.nwk
 ```
 
 The tree files use HyPhy `{Foreground}` labels. RELAX tests those foreground
@@ -85,13 +99,29 @@ To rerun every default step and stream verbose HyPhy output to the terminal:
 FORCE=1 VERBOSE=1 bash scripts/run_hantavirus_hyphy_selection.sh
 ```
 
-The default run includes FEL, MEME, aBSREL, and RELAX. It does not run MSS-GA
-unless you explicitly opt in with `RUN_MSS=1` or `ONLY=MSS`.
+For the current ANDV tree/alignment sample sheet:
 
-After HyPhy finishes, the workflow also extracts sparse ancestral/internal-node
-state maps from FEL and MEME JSON files into `ancestral_sequences/`. Disable
-this with `EXTRACT_ANCESTRAL=0`, or include all methods with substitution maps
-using `ANCESTRAL_METHODS="FEL MEME aBSREL RELAX"`.
+```bash
+SAMPLE_SHEET=andv_trees_sample_sheet.tsv FORCE=1 VERBOSE=1 bash scripts/run_hantavirus_hyphy_selection.sh
+```
+
+The default run includes FEL, two MEME runs, aBSREL, and RELAX. The standard
+MEME run writes `*_MEME.json` and is the only MEME output used for selection
+q-value summaries. The second MEME run uses HyPhy `--impute-states Yes` and
+writes `meme_imputed/*_MEME_imputed.json` plus matching
+`*_MEME_imputed.log` files for ancestral/imputed-state export only. It does not
+run MSS-GA unless you explicitly opt in with `RUN_MSS=1` or `ONLY=MSS`.
+
+Important: `meme_imputed/*_MEME_imputed.json` files are not used for MEME
+q-value calculations, dashboard significance counts, or evidence-tier selection
+summaries. They are stored in a separate folder and generated only to provide
+imputed/reconstructed states for the `ancestral_sequences/` export.
+
+After HyPhy finishes, the workflow extracts full codon and amino-acid FASTA
+sequences from the MEME imputed-state JSON files into `ancestral_sequences/`.
+Disable this with `EXTRACT_ANCESTRAL=0`, or include standard MEME and other
+methods with substitution maps using
+`ANCESTRAL_METHODS="FEL MEME MEME_imputed aBSREL RELAX"`.
 
 To rerun only RELAX with more random starting points:
 
@@ -107,6 +137,13 @@ To run only FEL for the ANDV tree/alignment sample sheet:
 
 ```bash
 ONLY=FEL VERBOSE=0 SAMPLE_SHEET=andv_trees_sample_sheet.tsv bash scripts/run_hantavirus_hyphy_selection.sh
+```
+
+To run only the MEME imputed-state analysis for the ANDV tree/alignment sample
+sheet:
+
+```bash
+ONLY=MEME_IMPUTED FORCE=1 VERBOSE=1 SAMPLE_SHEET=andv_trees_sample_sheet.tsv bash scripts/run_hantavirus_hyphy_selection.sh
 ```
 
 FEL, MEME, and aBSREL default to HyPhy's `Foreground` branch selector, i.e.
@@ -165,16 +202,40 @@ Cleaned HyPhy-ready inputs are written to:
 results/hantavirus_hyphy/inputs/
 ```
 
+For `andv_trees_sample_sheet.tsv`, cleaned inputs are written to:
+
+```text
+results/ANDV_trees_aln-hyphy/inputs/
+```
+
 HyPhy JSON outputs are written to:
 
 ```text
 results/hantavirus_hyphy/
 ```
 
+For `andv_trees_sample_sheet.tsv`, outputs are written to:
+
+```text
+results/ANDV_trees_aln-hyphy/
+```
+
+MEME imputed-state JSON files are kept separate from the selection-test JSONs:
+
+```text
+results/ANDV_trees_aln-hyphy/meme_imputed/*_MEME_imputed.json
+```
+
 Per-step logs are written to:
 
 ```text
 results/logs/
+```
+
+For `andv_trees_sample_sheet.tsv`, per-step logs are written to:
+
+```text
+results/ANDV_trees_aln-hyphy/logs/
 ```
 
 ## JavaScript Dashboard
@@ -237,6 +298,13 @@ Then open:
 http://127.0.0.1:8502/dashboard-js/
 ```
 
+To rebuild the MSS manuscript tables and relaunch the JavaScript dashboard:
+
+```bash
+python scripts/build_mss_interpretation_tables.py
+bash scripts/run_js_dashboard.sh
+```
+
 This dashboard is a static JavaScript app that reads the normalized TSV tables
 from `results/ANDV_trees_aln-hyphy/dashboard_tables/`. It summarizes the methods
 present in this run: FEL, MEME, aBSREL, RELAX, and any opt-in MSS-GA outputs.
@@ -247,11 +315,14 @@ Each displayed table can be exported as TSV, and each chart can be exported as
 a publication-ready SVG from the dashboard controls.
 
 The gene browser links site-level and branch-level evidence: foreground FEL and
-foreground MEME sites are shown on a multi-track codon map with FDR q-value
+foreground MEME sites are shown on multi-track codon maps with FDR q-value
 thresholds, tested-codon rug marks, selected-site labels, and an
 alignment-quality track; branch views show RELAX Test branches and foreground
 aBSREL-selected branches on the prepared labeled tree, plus RELAX
 effect/reliability plots and foreground aBSREL branch-evidence plots.
+
+The dashboard includes an **MSS Charts** tab for MSS-GA plots and tables. The
+MSS Context table is sortable by column and can be exported as TSV.
 
 Foreground FEL and foreground MEME site calls are Benjamini-Hochberg adjusted
 within each method/run.
@@ -263,6 +334,24 @@ The MEME tab also includes a branch EBF table reconstructed from MEME's stored
 branch posterior annotations. It reports branch, codon, posterior positive-class
 support, reconstructed EBF, FDR status, and reconstructed codon state so the
 branches contributing to each MEME site can be inspected directly.
+
+## MSS Interpretation Tables
+
+Build manuscript-ready MSS-GA interpretation tables:
+
+```bash
+python scripts/build_mss_interpretation_tables.py
+```
+
+Outputs are written to:
+
+```text
+results/ANDV_trees_aln-hyphy/mss_interpretation_tables/
+```
+
+These include figure-ready tables for the MSS support heatmap, median active
+parameter bars, top-parameter recurrence dot matrix, plain-language callouts,
+radar summary, and figure legend text.
 
 ## Streamlit Dashboard
 
@@ -302,18 +391,38 @@ results/ANDV_trees_aln-hyphy/dashboard_tables/
 
 ## Ancestral State Exports
 
-HyPhy JSON files store reconstructed/imputed node states in the `substitutions`
-object. In the current outputs this is present for FEL, MEME, aBSREL, and
-RELAX, although FEL and MEME are the most useful default sources for site-level
-interpretation. These are sparse state maps, not complete ancestral alignment
-files; missing node/site states are written as `NNN` in codon FASTA and `X` in
-amino-acid FASTA.
+HyPhy MEME with `--impute-states Yes` stores site-wise imputed codon
+probabilities in `MLE -> Imputed States`. The extractor converts those
+probabilities into full-length FASTA files by taking the highest-probability
+codon at each site. The prepared HyPhy-ready alignment is used only as a
+fallback when HyPhy emits no imputed state for a site.
 
-Extract FEL and MEME ancestral/internal-node states:
+Extract full MEME imputed-state codon and amino-acid FASTA files:
 
 ```bash
-python scripts/extract_hyphy_ancestral_states.py --results-dir results/ANDV_trees_aln-hyphy --methods FEL MEME
+python scripts/extract_hyphy_ancestral_states.py --results-dir results/ANDV_trees_aln-hyphy --methods MEME_imputed
 ```
+
+The `MEME_imputed` outputs in this folder should be interpreted as
+ancestral/imputed-state exports only. Use the standard `*_MEME.json` outputs for
+MEME site q-values and selection calls.
+
+The source JSON files for this export are stored separately from selection-test
+JSONs:
+
+```text
+results/ANDV_trees_aln-hyphy/meme_imputed/*_MEME_imputed.json
+```
+
+The default output files are full FASTA files, not sparse codon maps:
+
+```text
+results/ANDV_trees_aln-hyphy/ancestral_sequences/*_MEME_imputed.ancestral_codons.fasta
+results/ANDV_trees_aln-hyphy/ancestral_sequences/*_MEME_imputed.ancestral_amino_acids.fasta
+```
+
+If you explicitly include FEL, MEME, aBSREL, or RELAX in `--methods`, the
+extractor can still write sparse substitution-map exports for those methods.
 
 The main HyPhy runner performs that extraction automatically by default after
 analyses finish:
@@ -331,7 +440,7 @@ EXTRACT_ANCESTRAL=0 SAMPLE_SHEET=andv_trees_sample_sheet.tsv FORCE=1 VERBOSE=1 b
 Extract all current methods with substitution maps:
 
 ```bash
-python scripts/extract_hyphy_ancestral_states.py --results-dir results/ANDV_trees_aln-hyphy --methods FEL MEME aBSREL RELAX
+python scripts/extract_hyphy_ancestral_states.py --results-dir results/ANDV_trees_aln-hyphy --methods FEL MEME MEME_imputed aBSREL RELAX
 ```
 
 Outputs are written to:
@@ -347,9 +456,11 @@ Only these scripts are part of the current workflow:
 ```text
 scripts/filter_hyphy_codon_inputs.py
 scripts/run_hantavirus_hyphy_selection.sh
+scripts/build_mss_filelist.py
 scripts/build_hyphy_dashboard_tables.py
 scripts/build_dashboard.sh
 scripts/extract_hyphy_ancestral_states.py
+scripts/build_mss_interpretation_tables.py
 scripts/run_js_dashboard.sh
 scripts/run_hyphy_dashboard.sh
 ```

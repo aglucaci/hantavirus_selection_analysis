@@ -282,7 +282,7 @@ def qc_rows() -> tuple[list[dict], list[dict]]:
     return summaries, dropped
 
 
-def parse_meme(path: Path, segment: str, label_set: str) -> tuple[dict, list[dict], list[dict]]:
+def parse_meme(path: Path, segment: str, label_set: str, method: str = "MEME") -> tuple[dict, list[dict], list[dict]]:
     data = read_json(path)
     headers = data["MLE"]["headers"]
     rows = data["MLE"]["content"]["0"]
@@ -305,6 +305,7 @@ def parse_meme(path: Path, segment: str, label_set: str) -> tuple[dict, list[dic
                 {
                     "segment": segment,
                     "label_set": label_set,
+                    "method": method,
                     "codon": site_number,
                     "p_value": p_value,
                     "q_value": q_value,
@@ -336,6 +337,7 @@ def parse_meme(path: Path, segment: str, label_set: str) -> tuple[dict, list[dic
                     {
                         "segment": segment,
                         "label_set": label_set,
+                        "method": method,
                         "codon": site_number,
                         "p_value": p_value,
                         "q_value": q_value,
@@ -353,7 +355,7 @@ def parse_meme(path: Path, segment: str, label_set: str) -> tuple[dict, list[dic
     summary = {
         "segment": segment,
         "label_set": label_set,
-        "method": "MEME",
+        "method": method,
         "status": "pass",
         "n_sequences": data.get("input", {}).get("number of sequences", ""),
         "codons": data.get("input", {}).get("number of sites", ""),
@@ -754,7 +756,7 @@ def main() -> None:
                 analysis_summary.append(summary)
                 fel_sites.extend(rows)
             elif method == "MEME":
-                summary, rows, branch_rows = parse_meme(path, segment, label_set)
+                summary, rows, branch_rows = parse_meme(path, segment, label_set, method)
                 analysis_summary.append(summary)
                 meme_sites.extend(rows)
                 meme_branch_ebf.extend(branch_rows)
@@ -843,7 +845,7 @@ def main() -> None:
     write_tsv(
         OUT / "meme_sites.tsv",
         meme_sites,
-        ["segment", "label_set", "codon", "p_value", "q_value", "neg_log10_p", "neg_log10_q", "omega_plus", "branch_fraction", "branches_under_selection", "lrt", "fdr_status"],
+        ["segment", "label_set", "method", "codon", "p_value", "q_value", "neg_log10_p", "neg_log10_q", "omega_plus", "branch_fraction", "branches_under_selection", "lrt", "fdr_status"],
     )
     write_tsv(
         OUT / "meme_branch_ebf.tsv",
@@ -860,6 +862,7 @@ def main() -> None:
         [
             "segment",
             "label_set",
+            "method",
             "codon",
             "p_value",
             "q_value",
