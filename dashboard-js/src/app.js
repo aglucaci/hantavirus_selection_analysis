@@ -245,7 +245,7 @@ function buildGeneRows(data) {
       gene.relax_p = row.p_value;
       gene.relax_q = row.q_value;
     }
-    if (row.method === "MSS") gene.mss_models = row.significant_count;
+    if (row.method === "MSS") gene.mss_models = row.tested || row.significant_count;
     if (!gene.n_sequences && row.n_sequences) gene.n_sequences = row.n_sequences;
     if (!gene.codons && row.codons) gene.codons = row.codons;
   }
@@ -1176,6 +1176,51 @@ function mssFamilyHeatmaps(data, gene, id = `mss-family-heatmaps-${fileSafe(gene
   </svg>`;
 }
 
+function mssInterpretationPanel(data) {
+  const rows = data.mss.filter(row => Number(row.model_count || 0) > 0);
+  if (!rows.length) {
+    return `<section class="panel">
+      <h2>MSS Interpretation</h2>
+      <p class="interpretation">No MSS-GA results are available in the current dashboard tables.</p>
+    </section>`;
+  }
+  const bySegment = new Map();
+  for (const row of rows) {
+    if (!bySegment.has(row.segment)) bySegment.set(row.segment, []);
+    bySegment.get(row.segment).push(row);
+  }
+  const segmentText = [...bySegment.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([segment, segmentRows]) => {
+      const freqs = segmentRows.map(row => Number(row.top_parameter_frequency || 0)).filter(Number.isFinite);
+      const active = segmentRows.map(row => Number(row.median_active_parameters || 0)).filter(Number.isFinite);
+      const meanFreq = freqs.length ? freqs.reduce((sum, value) => sum + value, 0) / freqs.length : "";
+      const meanActive = active.length ? active.reduce((sum, value) => sum + value, 0) / active.length : "";
+      return `${segment}: mean top support ${fmt(meanFreq, 3)}, mean median active parameters ${fmt(meanActive, 3)}`;
+    })
+    .join("; ");
+  const recurrent = new Map();
+  for (const row of rows) {
+    if (!row.top_parameter) continue;
+    recurrent.set(row.top_parameter, (recurrent.get(row.top_parameter) || 0) + 1);
+  }
+  const recurrentText = [...recurrent.entries()]
+    .filter(([, count]) => count > 1)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([parameter, count]) => `${parameter.replace("alpha_", "")} (${count} runs)`)
+    .join(", ");
+  return `<section class="panel">
+    <h2>MSS Interpretation</h2>
+    <div class="mss-interpretation">
+      <p><strong>What MSS is saying:</strong> MSS-GA is a model-search summary for synonymous-rate heterogeneity. The key quantity shown here is model-inclusion frequency: how often a synonymous codon-pair parameter appears among fitted MSS models.</p>
+      <p><strong>What it is not:</strong> these active fractions are not raw p-values, BH q-values, or formal multiple-testing discoveries. They should be interpreted as recurrent model support, not as site-level or branch-level significance calls.</p>
+      <p><strong>Current narrative:</strong> MSS supports segment-level synonymous-rate heterogeneity across the ANDV analyses. ${escapeHtml(segmentText)}. Top parameter identity changes across tree label sets, so the robust story is broader synonymous-rate structure rather than one universal codon-pair effect.</p>
+      ${recurrentText ? `<p><strong>Recurring top parameters:</strong> ${escapeHtml(recurrentText)} recur as the top parameter in more than one run; most other top parameters are segment/tree-specific.</p>` : ""}
+      <p><strong>How to use this with selection results:</strong> treat MSS as context for synonymous-rate model structure. It can motivate cautious interpretation of dS-sensitive selection tests, but it does not itself identify adaptive amino-acid evolution.</p>
+    </div>
+  </section>`;
+}
+
 function mssPage(data) {
   const gene = data.genes.find(row => row.gene_id === state.selectedRun) ?? data.genes[0];
   const runMss = data.mss.filter(row => `${row.segment}_${row.label_set}` === gene.gene_id);
@@ -1197,6 +1242,7 @@ function mssPage(data) {
         ${runPicker(data, gene)}
       </div>
     </section>
+    ${mssInterpretationPanel(data)}
     <section class="panel">
       <h2>MSS Context</h2>
       ${table(data.mss, [

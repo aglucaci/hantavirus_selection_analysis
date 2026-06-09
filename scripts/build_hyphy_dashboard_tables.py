@@ -137,6 +137,17 @@ def first_model_metrics(value) -> list[float]:
     return []
 
 
+def median_number(values: list[int | float]) -> int | float | str:
+    if not values:
+        return ""
+    sorted_values = sorted(values)
+    midpoint = len(sorted_values) // 2
+    if len(sorted_values) % 2:
+        return sorted_values[midpoint]
+    median = (sorted_values[midpoint - 1] + sorted_values[midpoint]) / 2
+    return int(median) if median.is_integer() else median
+
+
 def read_fasta(path: Path) -> dict[str, str]:
     records: dict[str, list[str]] = {}
     name = ""
@@ -646,12 +657,12 @@ def parse_mss(path: Path, segment: str, label_set: str) -> tuple[dict, dict, lis
         "model_count": len(models) if isinstance(models, dict) else "",
         "best_ic": best_ic,
         "min_active_parameters": min(active_counts) if active_counts else "",
-        "median_active_parameters": sorted(active_counts)[len(active_counts) // 2] if active_counts else "",
+        "median_active_parameters": median_number(active_counts),
         "max_active_parameters": max(active_counts) if active_counts else "",
         "top_parameter": parameter_rows[0]["parameter"] if parameter_rows else "",
         "top_parameter_frequency": parameter_rows[0]["active_fraction"] if parameter_rows else "",
         "classes": "",
-        "interpretation": "MSS-GA synonymous-rate class search",
+        "interpretation": "Model-inclusion frequencies for synonymous-rate heterogeneity; not a p/q-value significance test",
     }
     summary = {
         "segment": segment,
@@ -660,8 +671,8 @@ def parse_mss(path: Path, segment: str, label_set: str) -> tuple[dict, dict, lis
         "status": "pass",
         "n_sequences": data.get("input", {}).get("number of sequences", ""),
         "codons": data.get("input", {}).get("number of sites", ""),
-        "tested": "",
-        "significant_count": len(models) if isinstance(models, dict) else "",
+        "tested": len(models) if isinstance(models, dict) else "",
+        "significant_count": "",
         "p_value": "",
         "neg_log10_p": "",
         "k": "",
