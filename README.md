@@ -306,8 +306,16 @@ Shortcut: build the tables and start the local server in one command:
 bash scripts/run_js_dashboard.sh
 ```
 
+The shortcut is portable across macOS and Ubuntu/WSL. It changes to the
+repository root, finds `python3`, `python`, or the `hantavirus-snake` conda
+environment, checks the dashboard files, rebuilds the normalized TSV tables,
+and then starts a local static server. The dashboard builder uses the Python
+standard library only, so no npm install is required for the JavaScript
+dashboard.
+
 The shortcut starts at port `8502` and automatically tries the next port if
-that one is already in use. Open the URL printed by the script, for example:
+that one is already in use. On WSL 2, open the printed `127.0.0.1` URL in your
+Windows or Ubuntu browser, for example:
 
 ```text
 http://127.0.0.1:8502/dashboard-js/
@@ -323,6 +331,16 @@ For a different results folder with the shortcut:
 
 ```bash
 HYPHY_RESULTS_DIR=results/hantavirus_hyphy bash scripts/run_js_dashboard.sh
+```
+
+If Ubuntu/WSL does not have Python available, install it or create the conda
+environment first:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y python3
+# or
+conda env create -f environment.yml
 ```
 
 To rebuild the MSS manuscript tables and relaunch the JavaScript dashboard:

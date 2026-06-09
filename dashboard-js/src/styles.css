@@ -141,6 +141,16 @@ h3 {
   min-width: 0;
 }
 
+.subpanel {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.subpanel h3 {
+  margin-top: 0;
+}
+
 .card .label {
   color: var(--muted);
   font-size: 12px;
@@ -770,6 +780,23 @@ th {
 .interpretation {
   color: var(--muted);
   line-height: 1.55;
+}
+
+.mss-interpretation {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 14px;
+  max-width: 1100px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.mss-interpretation p {
+  margin: 0;
+}
+
+.mss-interpretation strong {
+  color: var(--ink);
 }
 
 .warning-list {

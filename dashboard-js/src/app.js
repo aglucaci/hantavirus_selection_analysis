@@ -68,6 +68,37 @@ const AA_COLORS = {
   Val: "#5b7cfa",
 };
 
+const AA_FULL_NAMES = {
+  Ala: "Alanine",
+  Arg: "Arginine",
+  Asn: "Asparagine",
+  Asp: "Aspartic acid",
+  Cys: "Cysteine",
+  Gln: "Glutamine",
+  Glu: "Glutamic acid",
+  Gly: "Glycine",
+  His: "Histidine",
+  Ile: "Isoleucine",
+  Leu: "Leucine",
+  Lys: "Lysine",
+  Met: "Methionine",
+  Phe: "Phenylalanine",
+  Pro: "Proline",
+  Ser: "Serine",
+  Thr: "Threonine",
+  Trp: "Tryptophan",
+  Tyr: "Tyrosine",
+  Val: "Valine",
+};
+
+const AA_TO_CODONS = Object.entries(CODON_TO_AA).reduce((acc, [codon, aa]) => {
+  if (aa === "Stop") return acc;
+  if (!acc[aa]) acc[aa] = [];
+  acc[aa].push(codon);
+  return acc;
+}, {});
+Object.values(AA_TO_CODONS).forEach(codons => codons.sort());
+
 const app = document.querySelector("#app");
 const threshold = document.querySelector("#p-threshold");
 const thresholdTitle = document.querySelector("#p-threshold-title");
@@ -295,6 +326,50 @@ function felSelectionClass(row) {
   if (call === "negative_selection" || call === "purifying") return "negative-selection";
   if (call === "neutral") return "neutral-selection";
   return "unknown-selection";
+}
+
+function felSummaryRows(rows, totalSites = "") {
+  const categories = [
+    {
+      direction: "purifying",
+      label: "Purifying selection",
+      interpretation: "Negative selection: dN < dS",
+    },
+    {
+      direction: "diversifying",
+      label: "Positive selection",
+      interpretation: "Diversifying selection: dN > dS",
+    },
+    {
+      direction: "neutral",
+      label: "Neutral",
+      interpretation: "No rate difference: dN = dS",
+    },
+    {
+      direction: "unknown",
+      label: "Unknown",
+      interpretation: "FEL rate estimates could not be classified",
+    },
+  ];
+  return categories
+    .map(category => {
+      const categoryRows = rows.filter(row => row.direction === category.direction);
+      return {
+        selection_type: category.label,
+        total_sites: totalSites,
+        uncorrected_p_lt_0_1: categoryRows.filter(row => Number(row.p_value) < 0.1).length,
+        bh_q_lte_0_1: categoryRows.filter(row => Number(row.q_value) <= 0.1).length,
+        strongest_p: minFinite(categoryRows.map(row => row.p_value)),
+        strongest_q: minFinite(categoryRows.map(row => row.q_value)),
+        interpretation: category.interpretation,
+      };
+    })
+    .filter(row => row.uncorrected_p_lt_0_1 > 0 || row.bh_q_lte_0_1 > 0);
+}
+
+function minFinite(values) {
+  const numeric = values.map(Number).filter(Number.isFinite);
+  return numeric.length ? Math.min(...numeric) : "";
 }
 
 function fmt(value, digits = 3) {
@@ -813,11 +888,19 @@ function parseMssParameter(parameter) {
   };
 }
 
+function aminoAcidName(value) {
+  return String(value || "")
+    .split("/")
+    .map(part => AA_FULL_NAMES[part] || part || "Unknown")
+    .join("/");
+}
+
 function decorateMssParameter(row) {
   const parsed = parseMssParameter(row.parameter);
   return {
     ...row,
     ...parsed,
+    amino_acid_name: aminoAcidName(parsed.amino_acid),
     parameter_label: String(row.parameter || "").replace("alpha_", ""),
     active_fraction: Number(row.active_fraction || 0),
   };
@@ -940,12 +1023,12 @@ function mssParameterPlot(data, gene, id = `mss-parameters-${fileSafe(gene.gene_
     const y = plot.top + index * rowHeight;
     const xx = x(row.active_fraction);
     const color = AA_COLORS[row.amino_acid] || "#2d6cdf";
-    const label = `${row.codon_pair} (${row.amino_acid})`;
+    const label = `${row.codon_pair} (${row.amino_acid_name})`;
     return `<g>
       <text x="${plot.left - 12}" y="${y + 5}" text-anchor="end" font-size="11" fill="#334155">${escapeHtml(label)}</text>
       <line x1="${plot.left}" y1="${y}" x2="${xx}" y2="${y}" stroke="${color}" stroke-width="2.2"/>
       <circle cx="${xx}" cy="${y}" r="5" fill="${color}" stroke="#17202a" stroke-width="0.8">
-        <title>${escapeHtml(row.parameter)}; ${escapeHtml(row.amino_acid)}; active fraction ${fmt(row.active_fraction, 3)}</title>
+        <title>${escapeHtml(row.parameter)}; ${escapeHtml(row.amino_acid_name)}; active fraction ${fmt(row.active_fraction, 3)}</title>
       </circle>
       <text x="${Math.min(plot.right + 6, xx + 8)}" y="${y + 4}" font-size="10.5" fill="#475569">${fmt(row.active_fraction, 3)}</text>
     </g>`;
@@ -960,13 +1043,55 @@ function mssParameterPlot(data, gene, id = `mss-parameters-${fileSafe(gene.gene_
   </svg>`;
 }
 
-function mssFamilyHeatmaps(data, gene, id = `mss-family-heatmaps-${fileSafe(gene.gene_id)}`) {
-  const rows = data.mssParameters
+function mssHeatmapRows(data, gene, limit = 40) {
+  return data.mssParameters
     .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id)
     .map(decorateMssParameter)
     .filter(row => row.synonymous)
     .sort((a, b) => Number(b.active_fraction || 0) - Number(a.active_fraction || 0))
-    .slice(0, 40);
+    .slice(0, limit);
+}
+
+function mssHeatmapInterpretation(data, gene) {
+  const rows = mssHeatmapRows(data, gene, 40);
+  if (!rows.length) {
+    return `<p class="interpretation">No synonymous codon-pair MSS parameters are available for this run.</p>`;
+  }
+  const top = rows[0];
+  const byAa = new Map();
+  for (const row of rows) {
+    if (!byAa.has(row.amino_acid)) byAa.set(row.amino_acid, []);
+    byAa.get(row.amino_acid).push(row);
+  }
+  const familySummaries = [...byAa.entries()]
+    .sort((a, b) => Math.max(...b[1].map(row => Number(row.active_fraction || 0))) - Math.max(...a[1].map(row => Number(row.active_fraction || 0))))
+    .slice(0, 3)
+    .map(([aa, familyRows]) => {
+      const best = familyRows[0];
+      return `${aminoAcidName(aa)}: ${best.codon_pair} (${fmt(best.active_fraction, 3)})`;
+    });
+  const recurringFamilies = [...byAa.entries()]
+    .filter(([, familyRows]) => familyRows.length >= 2)
+    .map(([aa]) => aa);
+  return `<div class="mss-interpretation">
+    <p><strong>Main signal:</strong> ${escapeHtml(gene.gene_id)} is led by ${escapeHtml(top.codon_pair)} in the ${escapeHtml(top.amino_acid_name)} family, active in ${fmt(top.active_fraction, 3)} of MSS-GA models.</p>
+    <p><strong>Family concentration:</strong> top synonymous-pair support spans ${byAa.size} amino-acid families. Strongest families are ${escapeHtml(familySummaries.join("; "))}.</p>
+    <p><strong>How to read the heatmaps:</strong> darker upper-triangle cells mark codon pairs that recur more often across fitted MSS models. Lower triangles are hidden because ${escapeHtml("ACA-ACG")} and ${escapeHtml("ACG-ACA")} represent the same symmetric pair.</p>
+    ${recurringFamilies.length ? `<p><strong>Repeated within-family structure:</strong> ${escapeHtml(recurringFamilies.join(", "))} each contain multiple supported codon pairs, suggesting distributed synonymous-rate heterogeneity within those families.</p>` : ""}
+  </div>`;
+}
+
+function interpolateColor(start, end, t) {
+  const parse = hex => [1, 3, 5].map(index => parseInt(hex.slice(index, index + 2), 16));
+  const [r1, g1, b1] = parse(start);
+  const [r2, g2, b2] = parse(end);
+  const clamped = Math.max(0, Math.min(1, Number(t || 0)));
+  const channel = (a, b) => Math.round(a + (b - a) * clamped);
+  return `rgb(${channel(r1, r2)}, ${channel(g1, g2)}, ${channel(b1, b2)})`;
+}
+
+function mssFamilyHeatmaps(data, gene, id = `mss-family-heatmaps-${fileSafe(gene.gene_id)}`) {
+  const rows = mssHeatmapRows(data, gene, 40);
   const byAa = new Map();
   rows.forEach(row => {
     if (!byAa.has(row.amino_acid)) byAa.set(row.amino_acid, []);
@@ -975,26 +1100,34 @@ function mssFamilyHeatmaps(data, gene, id = `mss-family-heatmaps-${fileSafe(gene
   const families = [...byAa.entries()]
     .sort((a, b) => Math.max(...b[1].map(row => row.active_fraction)) - Math.max(...a[1].map(row => row.active_fraction)))
     .slice(0, 8);
-  const width = 840;
-  const panelWidth = 200;
-  const panelHeight = 178;
-  const columns = 4;
+  const width = 980;
+  const panelWidth = 455;
+  const panelHeight = 238;
+  const columns = 2;
   const rowsOfPanels = Math.max(1, Math.ceil(families.length / columns));
-  const height = 54 + rowsOfPanels * panelHeight;
+  const height = 104 + rowsOfPanels * panelHeight;
+  const scaleMin = 0.5;
+  const scaleMax = 1;
   const color = value => {
-    const t = Math.max(0, Math.min(1, (Number(value || 0) - 0.5) / 0.5));
-    const light = 92 - t * 48;
-    return `hsl(206 70% ${light}%)`;
+    const t = (Number(value || 0) - scaleMin) / (scaleMax - scaleMin);
+    return interpolateColor("#eaf4fb", "#084081", t);
   };
+  const legendX = width - 300;
+  const legendY = 31;
+  const legendWidth = 190;
+  const legendStops = Array.from({ length: 38 }, (_, index) => {
+    const t = index / 37;
+    return `<rect x="${legendX + t * legendWidth}" y="${legendY}" width="${legendWidth / 37 + 1}" height="10" fill="${interpolateColor("#eaf4fb", "#084081", t)}"/>`;
+  }).join("");
   const panels = families.map(([aa, familyRows], panelIndex) => {
     const col = panelIndex % columns;
     const rowIndex = Math.floor(panelIndex / columns);
     const originX = 30 + col * panelWidth;
-    const originY = 48 + rowIndex * panelHeight;
-    const codons = [...new Set(familyRows.flatMap(row => [row.codon1, row.codon2]))].sort();
-    const cell = Math.min(28, Math.floor(112 / Math.max(1, codons.length)));
-    const matrixX = originX + 58;
-    const matrixY = originY + 28;
+    const originY = 82 + rowIndex * panelHeight;
+    const codons = AA_TO_CODONS[aa] || [...new Set(familyRows.flatMap(row => [row.codon1, row.codon2]))].sort();
+    const cell = Math.min(34, Math.floor(186 / Math.max(1, codons.length)));
+    const matrixX = originX + 96;
+    const matrixY = originY + 46;
     const lookup = new Map();
     familyRows.forEach(row => {
       lookup.set(`${row.codon1}|${row.codon2}`, row.active_fraction);
@@ -1002,21 +1135,29 @@ function mssFamilyHeatmaps(data, gene, id = `mss-family-heatmaps-${fileSafe(gene
     });
     const cells = codons.flatMap((codon1, yIndex) => codons.map((codon2, xIndex) => {
       if (xIndex <= yIndex) {
-        return `<rect x="${matrixX + xIndex * cell}" y="${matrixY + yIndex * cell}" width="${cell - 1}" height="${cell - 1}" fill="#ffffff" stroke="#ffffff"/>`;
+        return "";
       }
       const value = codon1 === codon2 ? "" : lookup.get(`${codon1}|${codon2}`);
-      const fill = value === undefined || value === "" ? "#f8fafc" : color(value);
+      const fill = value === undefined || value === "" ? "#f7f9fb" : color(value);
+      const textFill = Number(value || 0) >= 0.78 ? "#ffffff" : "#17202a";
       const tooltip = `${aa} ${codon1} <-> ${codon2}${value === undefined || value === "" ? "; no top parameter" : `; active fraction ${fmt(value, 3)}`}`;
-      return `<rect x="${matrixX + xIndex * cell}" y="${matrixY + yIndex * cell}" width="${cell - 1}" height="${cell - 1}" fill="${fill}" stroke="#ffffff">
-        <title>${escapeHtml(tooltip)}</title>
-      </rect>`;
+      return `<g>
+        <rect x="${matrixX + xIndex * cell}" y="${matrixY + yIndex * cell}" width="${cell - 1.5}" height="${cell - 1.5}" rx="2" fill="${fill}" stroke="#ffffff">
+          <title>${escapeHtml(tooltip)}</title>
+        </rect>
+        ${value === undefined || value === "" || cell < 26 ? "" : `<text x="${matrixX + xIndex * cell + cell / 2}" y="${matrixY + yIndex * cell + cell / 2 + 3}" text-anchor="middle" font-size="8.8" font-weight="700" fill="${textFill}">${fmt(value, 2)}</text>`}
+      </g>`;
     })).join("");
-    const xLabels = codons.map((codon, index) => `<text x="${matrixX + index * cell + cell / 2}" y="${matrixY - 6}" text-anchor="middle" font-size="9.5" fill="#475569">${codon}</text>`).join("");
-    const yLabels = codons.map((codon, index) => `<text x="${matrixX - 8}" y="${matrixY + index * cell + cell / 2 + 3}" text-anchor="end" font-size="9.5" fill="#475569">${codon}</text>`).join("");
-    const top = familyRows[0];
+    const xLabels = codons.map((codon, index) => `<text x="${matrixX + index * cell + cell / 2}" y="${matrixY - 9}" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#334155">${codon}</text>`).join("");
+    const yLabels = codons.map((codon, index) => `<text x="${matrixX - 10}" y="${matrixY + index * cell + cell / 2 + 4}" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5" fill="#334155">${codon}</text>`).join("");
+    const familyColor = AA_COLORS[aa] || "#2d6cdf";
+    const matrixWidth = codons.length * cell;
+    const matrixHeight = codons.length * cell;
     return `<g>
-      <text x="${originX}" y="${originY}" font-size="13" font-weight="750" fill="#17202a">${escapeHtml(aa)}</text>
-      <text x="${originX}" y="${originY + 16}" font-size="10.5" fill="#64748b">top ${escapeHtml(top.codon_pair)} = ${fmt(top.active_fraction, 3)}</text>
+      <circle cx="${originX + 18}" cy="${originY + 20}" r="5" fill="${familyColor}"/>
+      <text x="${originX + 30}" y="${originY + 24}" font-size="14" font-weight="760" fill="#17202a">${escapeHtml(aminoAcidName(aa))} family</text>
+      <text x="${matrixX + matrixWidth / 2}" y="${matrixY + matrixHeight + 24}" text-anchor="middle" font-size="10.5" fill="#64748b">codon 2</text>
+      <text x="${matrixX - 58}" y="${matrixY + matrixHeight / 2}" text-anchor="middle" font-size="10.5" fill="#64748b" transform="rotate(-90 ${matrixX - 58} ${matrixY + matrixHeight / 2})">codon 1</text>
       ${xLabels}
       ${yLabels}
       ${cells}
@@ -1024,8 +1165,13 @@ function mssFamilyHeatmaps(data, gene, id = `mss-family-heatmaps-${fileSafe(gene
   }).join("");
   return `<svg id="${id}" class="chart publication-svg" viewBox="0 0 ${width} ${height}" role="img">
     <rect width="${width}" height="${height}" fill="#ffffff"/>
-    <text x="28" y="24" font-size="15" font-weight="700" fill="#17202a">${gene.gene_id} synonymous-family MSS heatmaps</text>
-    <text x="520" y="24" font-size="10.5" fill="#64748b">Darker cells = higher active fraction</text>
+    <text x="30" y="28" font-size="17" font-weight="760" fill="#17202a">${gene.gene_id} synonymous-family MSS heatmaps</text>
+    <text x="30" y="48" font-size="11.5" fill="#64748b">Upper triangle only; cell labels show active fraction for recurrent synonymous codon-pair parameters.</text>
+    ${legendStops}
+    <rect x="${legendX}" y="${legendY}" width="${legendWidth}" height="10" fill="none" stroke="#cbd5e1"/>
+    <text x="${legendX}" y="${legendY + 25}" font-size="10.5" fill="#64748b">${scaleMin.toFixed(2)}</text>
+    <text x="${legendX + legendWidth}" y="${legendY + 25}" text-anchor="end" font-size="10.5" fill="#64748b">${scaleMax.toFixed(2)}</text>
+    <text x="${legendX + legendWidth + 12}" y="${legendY + 9}" font-size="10.5" fill="#64748b">active fraction</text>
     ${panels || `<text x="28" y="62" font-size="12" fill="#64748b">No synonymous codon-pair parameters available.</text>`}
   </svg>`;
 }
@@ -1091,7 +1237,7 @@ function mssPage(data) {
     </div>
     <section class="panel">
       <h2>Synonymous Codon-Pair Heatmaps</h2>
-      <p class="muted">Within each amino-acid family, cells show recurrent MSS support for a specific synonymous codon-pair parameter. Non-top or unavailable pairs are left pale.</p>
+      ${mssHeatmapInterpretation(data, gene)}
       ${exportToolbar({ svgId: `mss-family-heatmaps-${fileSafe(gene.gene_id)}`, filename: `${gene.gene_id}_mss_synonymous_family_heatmaps` })}
       ${mssFamilyHeatmaps(data, gene)}
     </section>
@@ -1128,7 +1274,7 @@ function mssPage(data) {
         ${table(runParameters, [
           { key: "parameter", label: "Parameter" },
           { key: "codon_pair", label: "Codon pair" },
-          { key: "amino_acid", label: "AA family" },
+          { key: "amino_acid_name", label: "Amino acid family" },
           { key: "active_models", label: "Active models" },
           { key: "model_count", label: "Models" },
           { key: "active_fraction", label: "Active fraction" },
@@ -1863,6 +2009,10 @@ function sitesPage(data) {
   const sites = data.meme
     .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id && passesSiteThreshold(row))
     .map(annotateQuality);
+  const allFelRawSites = data.fel
+    .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id);
+  const felSummarySource = data.analysis.find(row => row.segment === gene.segment && row.label_set === gene.label_set && row.method === "FEL");
+  const felSummary = felSummaryRows(allFelRawSites, felSummarySource?.tested || gene.codons || "");
   const felSites = data.fel
     .filter(row => `${row.segment}_${row.label_set}` === gene.gene_id && passesSiteThreshold(row))
     .map(annotateQuality);
@@ -1888,6 +2038,19 @@ function sitesPage(data) {
       <h3>Foreground FEL Pervasive Site Evidence</h3>
       ${exportToolbar({ svgId: `fel-lollipop-${fileSafe(gene.gene_id)}`, filename: `${gene.gene_id}_fel_lollipop` })}
       ${lollipop(data, gene, { method: "FEL", id: `fel-lollipop-${fileSafe(gene.gene_id)}` })}
+      <div class="subpanel">
+        <h3>Uncorrected FEL Summary</h3>
+        <p class="muted">Counts use raw FEL p-values without multiple-testing correction. The BH q column is shown for comparison.</p>
+        ${table(felSummary, [
+          { key: "selection_type", label: "Selection type" },
+          { key: "total_sites", label: "Total FEL sites tested" },
+          { key: "uncorrected_p_lt_0_1", label: "Raw p < 0.10 sites" },
+          { key: "bh_q_lte_0_1", label: "BH q <= 0.10 sites" },
+          { key: "strongest_p", label: "Min raw p" },
+          { key: "strongest_q", label: "Min BH q" },
+          { key: "interpretation", label: "Interpretation" },
+        ], `${gene.gene_id}_fel_uncorrected_summary`)}
+      </div>
     </section>
     <section class="panel">
       <h2>Foreground FEL Site Table</h2>
